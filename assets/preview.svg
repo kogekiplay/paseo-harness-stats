@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="570" viewBox="0 0 1200 570">
+  <defs>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%"><feDropShadow dy="8" stdDeviation="16" flood-color="#20252b" flood-opacity=".08"/></filter>
+    <g id="gauge" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.3 17a10 10 0 1 1 17.4 0M12 13l4-5"/><circle cx="12" cy="13" r=".6"/></g>
+    <g id="database" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="12" cy="5" rx="8" ry="3.5"/><path d="M4 5v13c0 5 16 5 16 0V5M4 11c0 5 16 5 16 0"/></g>
+  </defs>
+  <rect width="1200" height="570" rx="24" fill="#f5f6f7"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif" fill="#22252a">
+    <text x="50" y="57" font-size="26" font-weight="650">Harness Stats</text>
+    <text x="1150" y="55" text-anchor="end" font-size="14" fill="#858991">Paseo · 会话统计</text>
+    <rect x="50" y="340" width="1100" height="150" rx="24" fill="#fbfbfc" stroke="#dfe2e7"/>
+    <text x="77" y="382" font-size="18" fill="#a5a8b0">给 Agent 发消息，标记 @files，或使用 /commands</text>
+    <text x="78" y="458" font-size="27" fill="#737880">+</text>
+    <text x="126" y="456" font-size="16" fill="#747983">Codex</text>
+    <circle cx="1105" cy="451" r="22" fill="#26734f"/>
+    <path d="M1105 461v-21m-8 8 8-8 8 8" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="73" y="503" width="337" height="34" rx="9" fill="#e9ebee"/>
+    <use href="#gauge" x="88" y="509" width="24" height="24" color="#777c85"/>
+    <text x="124" y="527" font-size="18" fill="#747983">5 轮 66 步 · 147 tok/s</text>
+    <rect x="507" y="503" width="417" height="34" rx="9" fill="#e9ebee"/>
+    <use href="#database" x="521" y="508" width="24" height="24" color="#777c85"/>
+    <text x="559" y="527" font-size="18" fill="#747983">4.4M tok · 缓存命中 68%</text>
+    <g filter="url(#shadow)">
+      <rect x="73" y="95" width="440" height="225" rx="20" fill="#fbfbfc" stroke="#e1e3e7"/>
+      <rect x="557" y="95" width="536" height="225" rx="20" fill="#fbfbfc" stroke="#e1e3e7"/>
+    </g>
+    <use href="#gauge" x="96" y="120" width="24" height="24" color="#22252a"/>
+    <text x="132" y="139" font-size="19" font-weight="600">会话统计</text>
+    <text x="488" y="139" text-anchor="end" font-size="19" font-weight="600">5 轮 66 步</text>
+    <path d="M96 158h393M581 158h489" stroke="#dfe2e7"/>
+    <g font-size="17" fill="#858991">
+      <text x="97" y="191">模型用时</text><text x="488" y="191" text-anchor="end">20分47秒</text>
+      <text x="97" y="225">工具调用用时</text><text x="488" y="225" text-anchor="end">4分6秒</text>
+      <text x="97" y="259">首 token 平均（TTFT）</text><text x="488" y="259" text-anchor="end">13.9秒</text>
+      <text x="97" y="293">输出速度（TPS）</text><text x="488" y="293" text-anchor="end">147 tok/s</text>
+    </g>
+    <use href="#database" x="581" y="119" width="24" height="24" color="#22252a"/>
+    <text x="617" y="139" font-size="19" font-weight="600">Token 用量</text>
+    <text x="1070" y="139" text-anchor="end" font-size="19" font-weight="600">4,356,857 tok</text>
+    <g font-size="17" fill="#858991">
+      <text x="581" y="191">缓存命中</text><text x="1070" y="191" text-anchor="end">68%</text>
+      <text x="581" y="225">未缓存输入</text><text x="1070" y="225" text-anchor="end">1,398,094 tok</text>
+      <text x="581" y="259">缓存读取</text><text x="1070" y="259" text-anchor="end">2,908,364 tok</text>
+      <text x="581" y="293">输出</text><text x="1070" y="293" text-anchor="end">50,399 tok</text>
+    </g>
+  </g>
+</svg>

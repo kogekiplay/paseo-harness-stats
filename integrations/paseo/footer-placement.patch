@@ -1,0 +1,308 @@
+diff --git a/packages/app/src/composer/index.tsx b/packages/app/src/composer/index.tsx
+index 4b31c4e..6f55704 100644
+--- a/packages/app/src/composer/index.tsx
++++ b/packages/app/src/composer/index.tsx
+@@ -180,7 +180,11 @@ import { ForgeBrandIcon } from "@/git/forge-icon";
+ import { useComposerForgeAutoAttach } from "./forge-auto-attach";
+ import { readClipboardImage } from "./clipboard-image";
+ import { normalizeNativePastedImages, type NativePastedFile } from "./native-pasted-image";
+-import { PluginResourceAttachmentPill, usePluginAttachmentPicker } from "@/plugins";
++import {
++  PluginResourceAttachmentPill,
++  PluginComposerPills,
++  usePluginAttachmentPicker,
++} from "@/plugins";
+ import { resolveClientSlashCommand, type ClientSlashCommand } from "@/client-slash-commands";
+ import {
+   appendWorkspaceFileAttachment,
+@@ -2655,6 +2659,15 @@ function ComposerContentImpl({
+               />
+               {pluginAttachments.picker}
+             </ComposerAutocompleteBinding>
++            {!isFullscreen && workspaceId ? (
++              <PluginComposerPills
++                serverId={serverId}
++                workspaceId={workspaceId}
++                agentId={agentId}
++                compact={isCompactFormFactor}
++                placement="footer"
++              />
++            ) : null}
+           </View>
+         </View>
+       </View>
+diff --git a/packages/app/src/plugins/buttons/model.test.ts b/packages/app/src/plugins/buttons/model.test.ts
+index 543ae78..d5c92c1 100644
+--- a/packages/app/src/plugins/buttons/model.test.ts
++++ b/packages/app/src/plugins/buttons/model.test.ts
+@@ -261,3 +261,27 @@ it("keeps the previous descriptor after rejecting an invalid update", () => {
+   registration.remove();
+   plugin.i18n.dispose();
+ });
++
++it("keeps footer pills below the input and scopes them to their host, workspace and agent", () => {
++  const buttons = store();
++  const plugin = installation();
++  const footer = buttons.addComposerPill(plugin, {
++    id: "stats",
++    workspaceId: "workspace",
++    agentId: "agent",
++    placement: "footer",
++    button: button(),
++  });
++  const entry = buttons.getSnapshot()[0];
++  expect(entry.placement).toBe("composer-footer");
++  expect(buttonMatches(entry, "host-a", "workspace", "agent")).toBe(false);
++  expect(buttonMatches(entry, "host-a", "workspace", "agent", "composer-footer")).toBe(true);
++  expect(buttonMatches(entry, "host-b", "workspace", "agent", "composer-footer")).toBe(false);
++  expect(buttonMatches(entry, "host-a", "other", "agent", "composer-footer")).toBe(false);
++  expect(buttonMatches(entry, "host-a", "workspace", "other", "composer-footer")).toBe(false);
++  footer.update({ label: "5 turns 66 steps" });
++  expect(buttons.getSnapshot()[0].button.label).toBe("5 turns 66 steps");
++  expect(buttons.getSnapshot()[0].key).toBe(entry.key);
++  footer.remove();
++  expect(buttons.getSnapshot()).toEqual([]);
++});
+diff --git a/packages/app/src/plugins/buttons/model.ts b/packages/app/src/plugins/buttons/model.ts
+index 4b81f95..97ea3d3 100644
+--- a/packages/app/src/plugins/buttons/model.ts
++++ b/packages/app/src/plugins/buttons/model.ts
+@@ -15,7 +15,7 @@ import {
+   type ResolvedPluginButton,
+ } from "./validation";
+ 
+-export type ButtonPlacement = "header" | "composer";
++export type ButtonPlacement = "header" | "composer" | "composer-footer";
+ 
+ export interface RegisteredPluginButton {
+   key: number;
+@@ -70,11 +70,16 @@ export class PluginButtonStore {
+     input: PluginComposerPillContribution<PluginText>,
+   ): PluginButtonRegistration<PluginText> {
+     if (!input.agentId.trim()) throw new Error("Plugin composer pill needs an agent");
+-    return this.add(installation, input, "composer", {
+-      context: "agent",
+-      workspaceId: input.workspaceId.trim(),
+-      agentId: input.agentId.trim(),
+-    });
++    return this.add(
++      installation,
++      input,
++      input.placement === "footer" ? "composer-footer" : "composer",
++      {
++        context: "agent",
++        workspaceId: input.workspaceId.trim(),
++        agentId: input.agentId.trim(),
++      },
++    );
+   }
+ 
+   private add(
+@@ -173,17 +178,15 @@ export function buttonMatches(
+   serverId: string,
+   workspaceId: string,
+   agentId: string | null,
++  placement: ButtonPlacement = agentId === null ? "header" : "composer",
+ ): boolean {
+   if (
+     entry.installation.serverId !== serverId ||
+     entry.context.workspaceId !== workspaceId ||
+-    !entry.button.visible
++    !entry.button.visible ||
++    entry.placement !== placement
+   )
+     return false;
+   if (agentId === null) return entry.placement === "header";
+-  return (
+-    entry.placement === "composer" &&
+-    entry.context.context === "agent" &&
+-    entry.context.agentId === agentId
+-  );
++  return entry.context.context === "agent" && entry.context.agentId === agentId;
+ }
+diff --git a/packages/app/src/plugins/buttons/view.tsx b/packages/app/src/plugins/buttons/view.tsx
+index 1876fef..e79b2ee 100644
+--- a/packages/app/src/plugins/buttons/view.tsx
++++ b/packages/app/src/plugins/buttons/view.tsx
+@@ -46,7 +46,7 @@ import {
+ } from "../popover";
+ import { SurfaceErrorBoundary } from "../surface-error-boundary";
+ import { toPluginTheme } from "../theme";
+-import { buttonMatches, type RegisteredPluginButton } from "./model";
++import { buttonMatches, type ButtonPlacement, type RegisteredPluginButton } from "./model";
+ import { pluginButtonStore } from "./store";
+ import { resolvePluginPlatform } from "../platform";
+ 
+@@ -83,7 +83,7 @@ function ButtonEnvironment({ view, children }: { view: ButtonView; children: Rea
+ 
+ function ButtonIcon({ view, icon }: { view: ButtonView; icon: PluginButtonIcon }) {
+   const color = view.props.theme.colors.foregroundMuted;
+-  const size = view.entry.placement === "composer" ? 14 : 16;
++  const size = view.entry.placement !== "header" ? 14 : 16;
+   const Icon = pluginIconComponent(icon);
+   return (
+     <View
+@@ -244,13 +244,14 @@ function buttonPages(
+ function ButtonControl({ view }: { view: ButtonView }) {
+   const { entry, props } = view;
+   const { button } = entry;
+-  const composer = entry.placement === "composer";
++  const composer = entry.placement !== "header";
++  const footer = entry.placement === "composer-footer";
+   const disabled = button.disabled || entry.pending;
+   const expanded = button.behavior.kind !== "action";
+   // A chevron marks a button that opens something. Composer pills keep their label on compact and
+   // open their surface above, so theirs points up and shows at every width; compact headers drop
+   // the label and the chevron with it.
+-  const chevron = expanded && (composer || !props.layout.compact);
++  const chevron = expanded && !footer && (composer || !props.layout.compact);
+   const Chevron = composer ? ChevronUp : ChevronDown;
+   let label = button.label;
+   if (composer) label = button.label ?? button.title;
+@@ -264,14 +265,17 @@ function ButtonControl({ view }: { view: ButtonView }) {
+     ({ hovered, pressed }: { hovered?: boolean; pressed: boolean }) =>
+       composer
+         ? [
+-            composerPillStyles.body,
+-            styles.button,
++            footer ? styles.footerButton : composerPillStyles.body,
++            !footer && styles.button,
+             (hovered || pressed || entry.open) && styles.active,
+             disabled && styles.disabled,
+           ]
+         : headerButtonStyle(props.layout.compact, { hovered, pressed, open: entry.open }, disabled),
+-    [composer, disabled, entry.open, props.layout.compact],
++    [composer, footer, disabled, entry.open, props.layout.compact],
+   );
++  let labelStyle = styles.label;
++  if (composer) labelStyle = styles.composerLabel;
++  if (footer) labelStyle = styles.footerLabel;
+   const contents = (
+     <>
+       {entry.pending ? (
+@@ -282,7 +286,7 @@ function ButtonControl({ view }: { view: ButtonView }) {
+         <ButtonIcon view={view} icon={button.icon} />
+       )}
+       {label ? (
+-        <Text numberOfLines={1} style={composer ? styles.composerLabel : styles.label}>
++        <Text numberOfLines={1} style={labelStyle}>
+           {label}
+         </Text>
+       ) : null}
+@@ -551,15 +555,21 @@ function OverflowSurface({ entries }: { entries: readonly RegisteredPluginButton
+   );
+ }
+ 
+-function useButtons(serverId: string, workspaceId: string, agentId: string | null) {
++function useButtons(
++  serverId: string,
++  workspaceId: string,
++  agentId: string | null,
++  placement?: ButtonPlacement,
++) {
+   const entries = useSyncExternalStore(
+     pluginButtonStore.subscribe,
+     pluginButtonStore.getSnapshot,
+     pluginButtonStore.getSnapshot,
+   );
+   return useMemo(
+-    () => entries.filter((entry) => buttonMatches(entry, serverId, workspaceId, agentId)),
+-    [entries, serverId, workspaceId, agentId],
++    () =>
++      entries.filter((entry) => buttonMatches(entry, serverId, workspaceId, agentId, placement)),
++    [entries, serverId, workspaceId, agentId, placement],
+   );
+ }
+ 
+@@ -568,16 +578,23 @@ export function PluginComposerPills({
+   workspaceId,
+   agentId,
+   compact,
++  placement = "track",
+ }: {
+   serverId: string;
+   workspaceId: string;
+   agentId: string;
+   compact: boolean;
++  placement?: "track" | "footer";
+ }) {
+-  const entries = useButtons(serverId, workspaceId, agentId);
++  const entries = useButtons(
++    serverId,
++    workspaceId,
++    agentId,
++    placement === "footer" ? "composer-footer" : "composer",
++  );
+   const hosts = useHosts();
+   const hostLabel = hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+-  return entries.map((entry) => (
++  const buttons = entries.map((entry) => (
+     <ThemedPluginButton
+       key={entry.key}
+       entry={entry}
+@@ -586,6 +603,14 @@ export function PluginComposerPills({
+       uniProps={pluginThemeMapping}
+     />
+   ));
++  if (entries.length === 0) return null;
++  return placement === "footer" ? (
++    <View testID="plugin-composer-footer" style={styles.footer}>
++      {buttons}
++    </View>
++  ) : (
++    buttons
++  );
+ }
+ 
+ /**
+@@ -668,6 +693,26 @@ const styles = StyleSheet.create((theme) => ({
+     borderColor: theme.colors.borderAccent,
+   },
+   button: { flexShrink: 1, minWidth: 0, maxWidth: 160 },
++  footer: {
++    flexDirection: "row",
++    alignItems: "center",
++    justifyContent: "center",
++    gap: theme.spacing[2],
++    height: 26,
++    overflow: "hidden",
++  },
++  footerButton: {
++    flexDirection: "row",
++    alignItems: "center",
++    justifyContent: "center",
++    gap: theme.spacing[1],
++    borderRadius: theme.borderRadius.md,
++    paddingHorizontal: theme.spacing[1],
++    height: 24,
++    flexShrink: 1,
++    minWidth: 0,
++  },
++  footerLabel: { fontSize: theme.fontSize.xs, color: theme.colors.foregroundMuted, flexShrink: 1 },
+   active: { backgroundColor: theme.colors.surface2 },
+   disabled: { opacity: theme.opacity[50] },
+   tooltipLabel: { fontSize: theme.fontSize.sm, color: theme.colors.foreground },
+diff --git a/packages/plugin/src/client/buttons.ts b/packages/plugin/src/client/buttons.ts
+index 2865a11..783b46f 100644
+--- a/packages/plugin/src/client/buttons.ts
++++ b/packages/plugin/src/client/buttons.ts
+@@ -53,4 +53,6 @@ export interface PluginComposerPillContribution<
+   Text extends PluginText = string,
+ > extends PluginHeaderButtonContribution<Text> {
+   agentId: string;
++  /** Defaults to the track above the input. Footer readings live below the input on every platform. */
++  placement?: "track" | "footer";
+ }
+diff --git a/public-docs/plugins/reference.md b/public-docs/plugins/reference.md
+index 692313b..ffc9b98 100644
+--- a/public-docs/plugins/reference.md
++++ b/public-docs/plugins/reference.md
+@@ -2291,6 +2291,8 @@ const pill = client.addComposerPill({
+ });
+ ```
+ 
++Set `placement: "footer"` to show a reading below the input on desktop, web, iOS and Android. The footer uses one fixed-height row, truncates long labels, and opens the same anchored popovers or native sheets as track pills. Omit `placement` or use `"track"` for the existing position above the input. Footer placement requires a client build that includes this extension.
++
+ A pill's `onPress` receives no arguments. Reach its agent's composer with
+ [`client.composers`](#reach-a-composer-by-reference):
+ 
