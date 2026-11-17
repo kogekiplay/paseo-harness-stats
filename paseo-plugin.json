@@ -10,6 +10,7 @@
   },
   "icon": "assets/icon.png",
   "media": [
+    "assets/preview-homepage.png",
     "assets/screenshot-performance.png",
     "assets/screenshot-tokens.png"
   ],

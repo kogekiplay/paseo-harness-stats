@@ -4,6 +4,8 @@
 
 在 Paseo 输入框旁显示 DeepSeek Harness 风格的会话统计。
 
+![Harness Stats 首页预览](assets/preview-homepage.png)
+
 ![Harness Stats 会话统计真实截图](assets/screenshot-performance.png)
 
 ![Harness Stats Token 用量真实截图](assets/screenshot-tokens.png)
