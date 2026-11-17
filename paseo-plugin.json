@@ -1,8 +1,18 @@
 {
   "id": "harness-stats",
   "name": "Harness Stats",
-  "description": "DeepSeek Harness 风格的会话统计：轮数、步数、Token 用量、缓存命中和生成性能。",
-  "media": [],
+  "description": "Shows turns, model steps, output speed, token totals and cache hit for the current Codex or Claude Code session beside the Paseo composer.",
+  "translations": {
+    "zh-CN": {
+      "name": "Harness Stats",
+      "description": "DeepSeek Harness 风格的会话统计：轮数、步数、Token 用量、缓存命中和生成性能。"
+    }
+  },
+  "icon": "assets/icon.png",
+  "media": [
+    "assets/screenshot-performance.png",
+    "assets/screenshot-tokens.png"
+  ],
   "requirements": {
     "paseo": ">=0.15.4"
   }

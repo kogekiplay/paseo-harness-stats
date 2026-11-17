@@ -1,10 +1,14 @@
+<img src="assets/icon.png" width="96" height="96" alt="Harness Stats logo" />
+
 # Harness Stats
 
 在 Paseo 输入框旁显示 DeepSeek Harness 风格的会话统计。
 
-![Harness Stats 界面示意](assets/preview.svg)
+![Harness Stats 会话统计真实截图](assets/screenshot-performance.png)
 
-上图使用演示数据。
+![Harness Stats Token 用量真实截图](assets/screenshot-tokens.png)
+
+上图截自 Paseo 0.16.0 中运行的真实插件，使用独立演示会话；仅裁剪输入框与统计弹窗区域，不包含私人聊天内容。
 
 ## 功能
 
