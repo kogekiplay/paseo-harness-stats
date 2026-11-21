@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { emptyStats, type Stats } from "../shared/stats";
+import { AntigravityReader } from "./antigravity";
 import { SessionFold } from "./fold";
 
 interface CachedSession {
@@ -21,12 +22,16 @@ export class SessionReader {
   private codexPaths = new Map<string, string>();
   private indexAt = 0;
   private indexing: Promise<void> | null = null;
+  private antigravity: AntigravityReader;
   constructor(
     private roots = {
       codex: process.env.CODEX_HOME || join(homedir(), ".codex"),
       claude: process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
     },
-  ) {}
+    antigravityRoot?: string,
+  ) {
+    this.antigravity = new AntigravityReader(antigravityRoot);
+  }
 
   private async exists(path: string): Promise<boolean> {
     try {
@@ -91,6 +96,7 @@ export class SessionReader {
     return null;
   }
   async read(provider: string, sessionId: string | null, cwd: string): Promise<Stats> {
+    if (provider === "antigravity") return this.antigravity.read(sessionId);
     if (provider !== "codex" && provider !== "claude") return emptyStats(provider, "unsupported");
     if (!sessionId) return emptyStats(provider, "unavailable");
     const path = await this.locate(provider, sessionId, cwd);
@@ -160,6 +166,7 @@ export class SessionReader {
     }
   }
   clear() {
+    this.antigravity.clear();
     this.cache.clear();
     this.codexPaths.clear();
   }

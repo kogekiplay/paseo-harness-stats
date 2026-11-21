@@ -90,7 +90,7 @@ export interface FooterCopy {
   ttft: string;
   speed: string;
   cacheLabel: string;
-  duration?(ms: number): string;
+  duration?(ms: number | null): string;
 }
 interface Options {
   isWeb: boolean;

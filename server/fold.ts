@@ -1,4 +1,4 @@
-import { emptyStats, type Stats } from "../shared/stats";
+import { emptyStats } from "../shared/stats";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>
@@ -27,7 +27,7 @@ function codexUsage(value: unknown): Usage {
 
 /** Folds complete JSONL lines; content and tool arguments are never retained. */
 export class SessionFold {
-  readonly stats: Stats;
+  readonly stats: ReturnType<typeof emptyStats>;
   private turn = "initial";
   private turns = new Set<string>();
   private responses = new Set<string>();

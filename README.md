@@ -19,7 +19,7 @@
 - 保留 DSH 的标签与中文时长格式，如「模型用时」「首 token 平均（TTFT）」「20分47秒」。
 - 支持悬停、展开选中态、再次点击收起、点击外部和 Esc 关闭。
 - 跟随 Paseo 当前主题；状态行预留固定高度，切换会话复用缓存，不闪占位文字。
-- 支持 Codex 和 Claude Code，已有会话历史也纳入累计。
+- 支持 Codex、Claude Code 和 Antigravity，已有会话历史也纳入累计。
 - 设置入口位于 **设置 → 插件 → Harness Stats → 会话统计**，可开关统计、选择手机端位置。
 
 不增加上下文圆环，继续使用 Paseo 自带的上下文显示。
@@ -64,7 +64,7 @@ paseo plugin install "$PWD"
 - **Token 总量**：输入加输出。缓存读取、写入都属于输入，分别只计一次。
 - **缓存命中**：缓存读取 Token ÷ 全部输入 Token。
 - **模型用时与 TPS**：根据会话边界时间戳累计模型请求耗时；TPS 为可计时响应的输出 Token ÷ 模型耗时。时间戳允许时排除工具运行与用户等待时间，包含首字等待。
-- **TTFT**：沿用 CC Switch 的会话日志思路。新版 Codex 使用响应中模型输出项的 `started_at_ms` 与请求边界；Claude Code 需要首块为思考，且带 `thinkingDurationMs`。只对条件满足的响应求平均，缺少样本显示 `—`。日志边界包含客户端准备时间，因此与路由层实时测量不完全相同。
+- **TTFT**：新版 Codex 使用响应中模型输出项的 `started_at_ms` 与请求边界；Claude Code 需要首块为思考，且带 `thinkingDurationMs`。Antigravity 使用 CLI 记录的首 Token 耗时，模型用时为首 Token 耗时加流式生成耗时。只对条件满足的响应求平均，缺少样本显示 `—`。
 
 子代理按各自会话独立统计。界面保持 DSH 风格，不显示附加说明或 `≈` 标记。
 
@@ -74,7 +74,8 @@ paseo plugin install "$PWD"
 
 - Codex：`CODEX_HOME` 或 `~/.codex` 下的 `sessions/`。
 - Claude Code：`CLAUDE_CONFIG_DIR` 或 `~/.claude` 下的 `projects/`。
-- 可见会话每两秒刷新；日志首次读取后只处理追加内容。
+- Antigravity：只读 `~/.gemini/antigravity-cli/conversations/<会话 ID>.db`，需要 daemon 支持 Node 内置 SQLite。使用 Antigravity CLI 1.5.13 的会话数据库验证。
+- 可见会话每两秒刷新。Codex 和 Claude Code 日志增量读取，Antigravity 数据库有变化时才重新汇总。
 - 桌面页脚使用 DOM 适配。Paseo 更改输入框结构后，可能需要更新插件。
 
 ## 开发

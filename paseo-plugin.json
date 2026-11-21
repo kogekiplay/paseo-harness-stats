@@ -1,7 +1,7 @@
 {
   "id": "harness-stats",
   "name": "Harness Stats",
-  "description": "Shows turns, model steps, output speed, token totals and cache hit for the current Codex or Claude Code session beside the Paseo composer.",
+  "description": "Shows turns, model steps, output speed, token totals and cache hit for Codex, Claude Code and Antigravity sessions beside the Paseo composer.",
   "translations": {
     "zh-CN": {
       "name": "Harness Stats",

@@ -11,8 +11,8 @@ export const statsSchema = z.object({
   cacheWriteTokens: z.number().nonnegative(),
   outputTokens: z.number().nonnegative(),
   timedOutputTokens: z.number().nonnegative(),
-  modelMs: z.number().nonnegative(),
-  toolMs: z.number().nonnegative(),
+  modelMs: z.number().nonnegative().nullable(),
+  toolMs: z.number().nonnegative().nullable(),
   ttftMs: z.number().nonnegative(),
   ttftSteps: z.number().int().nonnegative(),
   speedKind: z.literal("estimated"),
@@ -25,7 +25,7 @@ export const readStats = defineRpc({
   output: statsSchema,
 });
 
-export function emptyStats(provider: string, source: Stats["source"] = "session"): Stats {
+export function emptyStats(provider: string, source: Stats["source"] = "session") {
   return {
     provider,
     source,
@@ -41,16 +41,16 @@ export function emptyStats(provider: string, source: Stats["source"] = "session"
     ttftMs: 0,
     ttftSteps: 0,
     speedKind: "estimated",
-  };
+  } satisfies Stats;
 }
 
 export function totalTokens(stats: Stats): number {
-  // inputTokens includes cache reads and writes on both provider adapters.
+  // inputTokens includes cache reads and writes.
   return stats.inputTokens + stats.outputTokens;
 }
 
 export function speed(stats: Stats): number | null {
-  return stats.modelMs > 0 && stats.timedOutputTokens > 0
+  return stats.modelMs !== null && stats.modelMs > 0 && stats.timedOutputTokens > 0
     ? (stats.timedOutputTokens * 1000) / stats.modelMs
     : null;
 }
@@ -73,7 +73,8 @@ export function formatTokens(value: number): string {
     : `${Number((value / divisor).toFixed(1))}${divisor === 1e9 ? "B" : divisor === 1e6 ? "M" : "K"}`;
 }
 
-export function formatDuration(ms: number, locale = "en"): string {
+export function formatDuration(ms: number | null, locale = "en"): string {
+  if (ms === null) return "—";
   const zh = locale.startsWith("zh");
   if (ms < 60_000) return `${Number((ms / 1000).toFixed(1))}${zh ? "秒" : " s"}`;
   const seconds = Math.round(ms / 1000);
