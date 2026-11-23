@@ -18,7 +18,8 @@ function conversationId(handle: string | null): string | null {
   if (!handle.startsWith("plugin:")) return null;
   try {
     const value = JSON.parse(handle.slice("plugin:".length));
-    const id = value?.version === 1 ? value.data?.conversationId : undefined;
+    if (value?.version !== 1) return null;
+    const id = value.data?.sessionId ?? value.data?.conversationId;
     return typeof id === "string" && uuid.test(id) ? id : null;
   } catch {
     return null;

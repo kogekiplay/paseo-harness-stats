@@ -65,6 +65,9 @@ test("Antigravity reads wrapped sessions, normalizes usage, and refreshes from t
     assert.equal(averageTtft(before), 1000);
     assert.equal(speed(before), 40 / 6);
 
+    const sessionHandle = `plugin:${JSON.stringify({ version: 1, data: { sessionId: id } })}`;
+    assert.deepEqual(await reader.read("antigravity", sessionHandle, "/demo"), before);
+
     gen.run(2, generation(4, "two"));
     gen.run(3, generation(6, "three"));
     const after = await reader.read("antigravity", id, "/demo");
