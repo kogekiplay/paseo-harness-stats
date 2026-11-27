@@ -1,13 +1,21 @@
 import type { HarnessPreferences } from "../shared/preferences";
 
-let current: HarnessPreferences = { enabled: true, mobilePlacement: "footer" };
+let current: HarnessPreferences = {
+  enabled: true,
+  turnUsageEnabled: true,
+  mobilePlacement: "footer",
+};
 const listeners = new Set<(value: HarnessPreferences) => void>();
 
 export function getPreferences() {
   return current;
 }
 export function setPreferences(value: HarnessPreferences) {
-  if (current.enabled === value.enabled && current.mobilePlacement === value.mobilePlacement)
+  if (
+    current.enabled === value.enabled &&
+    current.turnUsageEnabled === value.turnUsageEnabled &&
+    current.mobilePlacement === value.mobilePlacement
+  )
     return;
   current = value;
   for (const listener of listeners) listener(value);

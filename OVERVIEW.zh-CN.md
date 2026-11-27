@@ -1,9 +1,9 @@
-Harness Stats 在 Paseo 输入框旁显示 DeepSeek Harness 风格的会话统计：轮数、模型步数、输出速度、累计 Token 和缓存命中率。点击对应读数，在原位展开会话统计或 Token 明细。状态行预留固定高度，切换工作区复用缓存，颜色及悬停、展开态跟随当前主题。插件设置页可控制是否显示和手机端位置。
+Harness Stats 在 Paseo 输入框旁显示 DeepSeek Harness 风格的会话统计：轮数、模型步数、输出速度、累计 Token 和缓存命中率。点击对应读数，在原位展开会话统计或 Token 明细。桌面和网页端还会在每轮已完成回复的底部操作栏显示用量按钮（窄屏自动折叠为纯图标），点击展开本轮用量弹窗，查看提供方 / 模型、缓存命中、未缓存输入、缓存读取、缓存写入、输出及推理 Token；代理详情面板同步展示会话累计与按轮明细。状态行预留固定高度，切换工作区复用缓存，颜色及悬停、展开态跟随当前主题。插件设置页可分别开关会话统计和每轮用量，并选择手机端位置。
 
-需要 Paseo 0.15.4 或更新版本，支持连接主机上的 Codex、Claude Code 和 Antigravity 会话记录。Antigravity 需要 daemon 支持 Node 内置 SQLite，已用 Antigravity CLI 1.5.13 验证。桌面和网页显示在输入框下方。0.15.4 原生手机客户端使用输入框上方位置，下方显示需要使用仓库附带扩展构建的客户端。
+需要 Paseo 0.15.4 或更新版本，支持连接主机上的 Codex、Claude Code 和 Antigravity 会话记录。Antigravity 需要 daemon 支持 Node 内置 SQLite，已用 Antigravity CLI 1.5.13 验证。桌面和网页端使用输入框下方状态行与回复底栏按钮。0.15.4 原生手机客户端使用输入框上方位置，下方显示需要使用仓库附带扩展构建的客户端。
 
-安装前的历史也纳入累计，可见会话每两秒刷新。Token 总量包括输入和输出，缓存读取与写入只计一次。步数按有用量的模型响应计算，不计没有用量记录的失败请求；子代理独立统计。
+安装前的历史也纳入累计，可见会话每两秒刷新。Token 总量包括输入和输出，缓存读取与写入只计一次，按轮明细省略未报告的可选字段。步数按有用量的模型响应计算，不计没有用量记录的失败请求；子代理独立统计。
 
 Codex 根据新版模型输出起始时间戳计算 TTFT，Claude Code 使用首块思考耗时。Antigravity 读取 CLI 记录的首 Token 耗时，并与流式生成耗时相加得到模型用时。缺少时间样本时显示横线。
 
-插件读取 CODEX_HOME 或 ~/.codex、CLAUDE_CONFIG_DIR 或 ~/.claude，以及 ~/.gemini/antigravity-cli/conversations。仅向已连接的 Paseo 客户端返回聚合统计，不修改会话记录，也不请求外部统计服务。桌面页脚使用 DOM 适配，Paseo 布局更新后可能需要同步调整。
+插件读取 CODEX_HOME 或 ~/.codex、CLAUDE_CONFIG_DIR 或 ~/.claude，以及 ~/.gemini/antigravity-cli/conversations。仅向已连接的 Paseo 客户端返回聚合统计，不修改会话记录，也不请求外部统计服务。桌面页脚和回复底栏按钮使用 DOM 适配，Paseo 布局更新后可能需要同步调整。

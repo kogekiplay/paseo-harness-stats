@@ -17,6 +17,7 @@ export default function contribute(server: PluginServerContext) {
         agent.runtimeInfo?.sessionId ??
         null,
       agent.cwd,
+      agent.model ?? agent.runtimeInfo?.model ?? null,
     );
   });
   return () => reader.clear();

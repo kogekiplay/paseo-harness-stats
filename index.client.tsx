@@ -59,7 +59,11 @@ export default function contribute(client: PluginClientContext) {
   });
   const createFooter = () =>
     installFooter({
-      isWeb: Platform.OS === "web" && currentPreferences.enabled,
+      isWeb:
+        Platform.OS === "web" &&
+        (currentPreferences.enabled || currentPreferences.turnUsageEnabled),
+      showFooter: currentPreferences.enabled,
+      showTurnUsage: currentPreferences.turnUsageEnabled,
       hasAgent: (id) => agents.has(id),
       read: (agentId) => cache.read(agentId),
       peek: (agentId) => cache.peek(agentId),
@@ -84,14 +88,25 @@ export default function contribute(client: PluginClientContext) {
         speed: client.i18n.t(messages, "speed"),
         cacheLabel: client.i18n.t(messages, "cacheLabel"),
         duration: (ms) => formatDuration(ms, client.i18n.locale),
+        turnTitle: client.i18n.t(messages, "turnUsageTitle"),
+        turnConsumed: (total) => client.i18n.t(messages, "turnUsageConsumed", { total }),
+        turnModel: client.i18n.t(messages, "turnUsageModel"),
+        turnCacheHit: client.i18n.t(messages, "turnUsageCacheHit"),
+        turnInput: client.i18n.t(messages, "turnUsageInput"),
+        turnCacheRead: client.i18n.t(messages, "turnUsageCacheRead"),
+        turnCacheWrite: client.i18n.t(messages, "turnUsageCacheWrite"),
+        turnOutput: client.i18n.t(messages, "turnUsageOutput"),
+        turnReasoning: (tokens) => client.i18n.t(messages, "turnUsageReasoning", { tokens }),
       }),
     });
   let removeFooter = createFooter();
   const removePreferences = subscribePreferences((value) => {
     const changedPlacement = currentPreferences.mobilePlacement !== value.mobilePlacement;
-    const changedEnabled = currentPreferences.enabled !== value.enabled;
+    const changedFooter =
+      currentPreferences.enabled !== value.enabled ||
+      currentPreferences.turnUsageEnabled !== value.turnUsageEnabled;
     currentPreferences = value;
-    if (changedEnabled) {
+    if (changedFooter) {
       removeFooter();
       removeFooter = createFooter();
     }
@@ -99,7 +114,8 @@ export default function contribute(client: PluginClientContext) {
       for (const pill of pills.values()) pill.remove();
       pills.clear();
     }
-    if (value.enabled) for (const [id, workspaceId] of agents) register({ id, workspaceId });
+    if (value.enabled || value.turnUsageEnabled)
+      for (const [id, workspaceId] of agents) register({ id, workspaceId });
   });
   function removePills(id: string) {
     for (const kind of ["activity", "usage"]) {
@@ -123,11 +139,15 @@ export default function contribute(client: PluginClientContext) {
     const newlySeen = !agents.has(agent.id);
     if (agents.get(agent.id) !== agent.workspaceId) removePills(agent.id);
     agents.set(agent.id, agent.workspaceId);
+    if (!currentPreferences.enabled && !currentPreferences.turnUsageEnabled) {
+      removePills(agent.id);
+      return;
+    }
+    if (newlySeen || !cache.peek(agent.id)) cache.prefetch(agent.id);
     if (!currentPreferences.enabled) {
       removePills(agent.id);
       return;
     }
-    if (newlySeen) cache.prefetch(agent.id);
     if (Platform.OS !== "web" && !pills.has(`${agent.id}:activity`)) {
       const updateLabels = (stats: Stats) => {
         if (lifetime.signal.aborted || stats.source !== "session") return;

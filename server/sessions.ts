@@ -13,7 +13,7 @@ interface CachedSession {
   ino: number;
   tail: string;
   decoder: StringDecoder;
-  busy: Promise<Stats> | null;
+  busy: Promise<void> | null;
 }
 
 /** Reads only appended bytes; the cache contains counters, never conversation text. */
@@ -95,8 +95,13 @@ export class SessionReader {
     }
     return null;
   }
-  async read(provider: string, sessionId: string | null, cwd: string): Promise<Stats> {
-    if (provider === "antigravity") return this.antigravity.read(sessionId);
+  async read(
+    provider: string,
+    sessionId: string | null,
+    cwd: string,
+    fallbackModel?: string | null,
+  ): Promise<Stats> {
+    if (provider === "antigravity") return this.antigravity.read(sessionId, fallbackModel);
     if (provider !== "codex" && provider !== "claude") return emptyStats(provider, "unsupported");
     if (!sessionId) return emptyStats(provider, "unavailable");
     const path = await this.locate(provider, sessionId, cwd);
@@ -114,7 +119,10 @@ export class SessionReader {
       this.cache.set(path, cached);
     }
     // Concurrent windows share one read, including the initial full-log fold.
-    if (cached.busy) return cached.busy;
+    if (cached.busy) {
+      await cached.busy;
+      return cached.fold.snapshot(fallbackModel);
+    }
     this.cache.delete(path);
     this.cache.set(path, cached);
     if (this.cache.size > 32) {
@@ -154,10 +162,10 @@ export class SessionReader {
         }
         entry.offset = info.size;
       }
-      return { ...entry.fold.stats };
     })();
     try {
-      return await entry.busy;
+      await entry.busy;
+      return entry.fold.snapshot(fallbackModel);
     } catch (error) {
       this.cache.delete(path);
       throw error;

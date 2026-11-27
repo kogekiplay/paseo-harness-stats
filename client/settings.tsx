@@ -28,6 +28,14 @@ export function HarnessSettings() {
             onValueChange={(value) => save({ enabled: value })}
             testID="harness-stats-enabled"
           />
+          <SettingsSwitch
+            label={t("settingsTurnUsageEnabled")}
+            hint={t("settingsTurnUsageEnabledHint")}
+            value={settings.values.turnUsageEnabled}
+            disabled={settings.saving}
+            onValueChange={(value) => save({ turnUsageEnabled: value })}
+            testID="harness-stats-turn-usage-enabled"
+          />
           <SettingsSelect
             label={t("settingsMobilePlacement")}
             hint={t("settingsMobilePlacementHint")}

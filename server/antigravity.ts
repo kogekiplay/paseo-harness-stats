@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type * as Sqlite from "node:sqlite";
 import { emptyStats, type Stats } from "../shared/stats";
 import { fields, firstIndex, milliseconds } from "./antigravity-protobuf";
+import { TurnUsageAccumulator, withFallbackRoutes } from "./fold";
 
 const provider = "antigravity";
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -30,6 +31,35 @@ function tokens(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+function text(value: unknown): string | undefined {
+  return value instanceof Uint8Array ? decoder.decode(value) : undefined;
+}
+
+function responseUsage(raw: number | Uint8Array | undefined) {
+  if (!(raw instanceof Uint8Array)) return undefined;
+  const usage = new Map(fields(raw));
+  const reasoningTokens = usage.has(9) ? tokens(usage.get(9)) : undefined;
+  return {
+    id: text(usage.get(11)),
+    tokens: {
+      uncachedInputTokens: tokens(usage.get(2)),
+      cachedTokens: usage.has(5) ? tokens(usage.get(5)) : undefined,
+      cacheWriteTokens: usage.has(4) ? tokens(usage.get(4)) : undefined,
+      // The total already includes thinking when the CLI reports it.
+      outputTokens: usage.has(3) ? tokens(usage.get(3)) : (reasoningTokens ?? 0) + tokens(usage.get(10)),
+      reasoningTokens,
+    },
+  };
+}
+
+interface PlannerStep {
+  startedAtMs: number | null;
+  firstAtMs: number | null;
+  completedAtMs: number | null;
+  messageId: string | undefined;
+  usage: ReturnType<typeof responseUsage>;
+}
+
 /** Reads aggregate fields from the CLI's generator and step metadata. */
 function summarize(db: Sqlite.DatabaseSync): Stats {
   const stats: Stats = emptyStats(provider);
@@ -37,37 +67,77 @@ function summarize(db: Sqlite.DatabaseSync): Stats {
   const turns = new Set<number>();
   const responses = new Set<string>();
   const generationSteps = new Set<number>();
-  const prompts: number[] = [];
-  for (const row of db.prepare(`SELECT idx FROM steps WHERE step_type = ${userStep} ORDER BY idx`).iterate())
-    prompts.push(Number(row.idx));
+  const prompts: { idx: number; usage: TurnUsageAccumulator }[] = [];
+  const fallback = new TurnUsageAccumulator("initial", provider);
+  for (const row of db.prepare(
+    `SELECT idx, metadata FROM steps WHERE step_type = ${userStep} ORDER BY idx`,
+  ).iterate()) {
+    const idx = Number(row.idx);
+    const usage = new TurnUsageAccumulator(String(idx), provider);
+    if (row.metadata instanceof Uint8Array) {
+      usage.start(milliseconds(new Map(fields(row.metadata)).get(1)));
+    }
+    prompts.push({ idx, usage });
+  }
+
+  const planners = new Map<number, PlannerStep>();
+  let hasTools = false;
+  let toolMs: number | null = null;
+  for (const row of db.prepare(
+    `SELECT idx, step_type, metadata FROM steps WHERE step_type IN (${plannerStep}, ${toolStep}) ORDER BY idx`,
+  ).iterate()) {
+    if (!(row.metadata instanceof Uint8Array)) continue;
+    const metadata = new Map(fields(row.metadata));
+    if (row.step_type === plannerStep) {
+      planners.set(Number(row.idx), {
+        startedAtMs: milliseconds(metadata.get(1)),
+        firstAtMs: milliseconds(metadata.get(6)),
+        completedAtMs: milliseconds(metadata.get(7)),
+        messageId: text(metadata.get(12)),
+        usage: responseUsage(metadata.get(9)),
+      });
+    } else if (metadata.has(4)) {
+      hasTools = true;
+      const start = milliseconds(metadata.get(32));
+      const end = milliseconds(metadata.get(8));
+      if (start !== null && start > 0 && end !== null && end >= start)
+        toolMs = (toolMs ?? 0) + (end - start);
+    }
+  }
 
   function addResponse(
-    rawUsage: number | Uint8Array | undefined,
+    usage: ReturnType<typeof responseUsage>,
     index: number | undefined,
     ttft: number | null,
     modelMs: number | null,
+    model?: string,
   ) {
-    if (!(rawUsage instanceof Uint8Array)) return;
-    const usage = new Map(fields(rawUsage));
-    const responseId = usage.get(11);
-    const id = responseId instanceof Uint8Array ? decoder.decode(responseId) : "";
-    if (id && responses.has(id)) return;
+    if (!usage) return false;
+    const { id } = usage;
+    if (id && responses.has(id)) return true;
 
-    // The CLI reports uncached input separately. Total output already includes thinking.
-    const cacheRead = tokens(usage.get(5));
-    const cacheWrite = tokens(usage.get(4));
-    const input = tokens(usage.get(2)) + cacheRead + cacheWrite;
-    const output = usage.has(3) ? tokens(usage.get(3)) : tokens(usage.get(9)) + tokens(usage.get(10));
-    if (input + output === 0) return;
+    const { uncachedInputTokens, cachedTokens, cacheWriteTokens, outputTokens } = usage.tokens;
+    const input = uncachedInputTokens + (cachedTokens ?? 0) + (cacheWriteTokens ?? 0);
+    const output = outputTokens;
+    if (input + output === 0) return false;
     if (id) responses.add(id);
     stats.steps++;
-    if (index !== undefined) {
-      const prompt = prompts.findLast((prompt) => prompt < index);
-      if (prompt !== undefined) turns.add(prompt);
+    const prompt = index === undefined ? undefined : prompts.findLast(({ idx }) => idx < index);
+    if (prompt) turns.add(prompt.idx);
+    const turn = prompt?.usage ?? fallback;
+    const planner = index === undefined ? undefined : planners.get(index);
+    if (planner) {
+      if (!prompt) turn.start(planner.startedAtMs);
+      turn.complete(planner.completedAtMs);
+      turn.addMessage(planner.messageId);
+      turn.addMessage(planner.usage?.id);
     }
+    turn.addMessage(id);
+    turn.addModel(model);
+    turn.addStep(usage.tokens);
     stats.inputTokens += input;
-    stats.cachedTokens += cacheRead;
-    stats.cacheWriteTokens += cacheWrite;
+    stats.cachedTokens += cachedTokens ?? 0;
+    stats.cacheWriteTokens += cacheWriteTokens ?? 0;
     stats.outputTokens += output;
     if (ttft !== null && ttft > 0 && (modelMs === null || ttft <= modelMs)) {
       stats.ttftMs += ttft;
@@ -77,6 +147,7 @@ function summarize(db: Sqlite.DatabaseSync): Stats {
       stats.modelMs = (stats.modelMs ?? 0) + modelMs;
       stats.timedOutputTokens += output;
     }
+    return true;
   }
 
   for (const row of db.prepare("SELECT data FROM gen_metadata ORDER BY idx").iterate()) {
@@ -91,37 +162,30 @@ function summarize(db: Sqlite.DatabaseSync): Stats {
     const metadata = new Map(fields(chat));
     const ttft = milliseconds(metadata.get(11));
     const stream = milliseconds(metadata.get(12));
-    addResponse(metadata.get(4), index, ttft, ttft !== null && stream !== null ? ttft + stream : null);
-    if (index !== undefined && metadata.get(4) instanceof Uint8Array) generationSteps.add(index);
+    const model = text(metadata.get(19));
+    const counted = addResponse(
+      responseUsage(metadata.get(4)),
+      index,
+      ttft,
+      ttft !== null && stream !== null ? ttft + stream : null,
+      model && !/[^ -~]/.test(model) ? model : undefined,
+    );
+    if (index !== undefined && counted) generationSteps.add(index);
   }
 
-  let hasTools = false;
-  let toolMs: number | null = null;
-  for (const row of db.prepare(
-    `SELECT idx, step_type, metadata FROM steps WHERE step_type IN (${plannerStep}, ${toolStep})`,
-  ).iterate()) {
-    const index = Number(row.idx);
-    if (row.step_type === plannerStep && generationSteps.has(index)) continue;
-    if (!(row.metadata instanceof Uint8Array)) continue;
-    const metadata = new Map(fields(row.metadata));
-    if (row.step_type === plannerStep) {
-      // A completed planner response can reach the step table before its generator record.
-      const start = milliseconds(metadata.get(1));
-      const first = milliseconds(metadata.get(6));
-      const finish = milliseconds(metadata.get(7));
-      addResponse(
-        metadata.get(9),
-        index,
-        start !== null && first !== null ? first - start : null,
-        start !== null && finish !== null ? finish - start : null,
-      );
-    } else if (metadata.has(4)) {
-      hasTools = true;
-      const start = milliseconds(metadata.get(32));
-      const end = milliseconds(metadata.get(8));
-      if (start !== null && start > 0 && end !== null && end >= start)
-        toolMs = (toolMs ?? 0) + (end - start);
-    }
+  for (const [index, planner] of planners) {
+    if (generationSteps.has(index)) continue;
+    // A completed planner response can reach the step table before its generator record.
+    const { startedAtMs: start, firstAtMs: first, completedAtMs: finish } = planner;
+    addResponse(
+      planner.usage,
+      index,
+      start !== null && first !== null ? first - start : null,
+      start !== null && finish !== null ? finish - start : null,
+    );
+  }
+  for (const turn of [fallback, ...prompts.map(({ usage }) => usage)]) {
+    if (turn.billed) stats.turnUsages.push(turn.snapshot(stats.turnUsages.length + 1));
   }
   stats.turns = turns.size;
   stats.toolMs = hasTools ? toolMs : 0;
@@ -143,7 +207,7 @@ export class AntigravityReader {
 
   constructor(private root = join(homedir(), ".gemini", "antigravity-cli")) {}
 
-  async read(handle: string | null): Promise<Stats> {
+  async read(handle: string | null, fallbackModel?: string | null): Promise<Stats> {
     const id = conversationId(handle);
     const sqlite = process.getBuiltinModule?.("node:sqlite") as typeof Sqlite | undefined;
     if (!id || !sqlite) return emptyStats(provider, "unavailable");
@@ -155,7 +219,7 @@ export class AntigravityReader {
     if (await realpath(path) !== file) return emptyStats(provider, "unavailable");
     const signature = `${main}/${wal ?? ""}`;
     const cached = this.cache.get(file);
-    if (cached?.signature === signature) return { ...cached.stats };
+    if (cached?.signature === signature) return withFallbackRoutes(structuredClone(cached.stats), fallbackModel);
 
     const db = new sqlite.DatabaseSync(file, { readOnly: true });
     try {
@@ -165,7 +229,7 @@ export class AntigravityReader {
       this.cache.delete(file);
       this.cache.set(file, { signature, stats });
       if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value!);
-      return { ...stats };
+      return withFallbackRoutes(structuredClone(stats), fallbackModel);
     } finally {
       db.close();
     }

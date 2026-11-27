@@ -5,6 +5,7 @@ export const mobilePlacementSchema = z.enum(["footer", "track"]);
 export const valuesSchema = z
   .object({
     enabled: z.boolean().default(true),
+    turnUsageEnabled: z.boolean().default(true),
     mobilePlacement: mobilePlacementSchema.default("footer"),
   })
   .strict();

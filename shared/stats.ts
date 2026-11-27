@@ -1,6 +1,30 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
+export const turnRouteSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+});
+export type TurnRoute = z.infer<typeof turnRouteSchema>;
+
+export const turnUsageSchema = z.object({
+  turnNumber: z.number().int().positive(),
+  turnId: z.string().optional(),
+  messageIds: z.array(z.string()).default([]),
+  startedAtMs: z.number().nonnegative().nullable().default(null),
+  completedAtMs: z.number().nonnegative().nullable().default(null),
+  routes: z.array(turnRouteSchema).default([]),
+  steps: z.number().int().nonnegative(),
+  inputTokens: z.number().nonnegative(),
+  uncachedInputTokens: z.number().nonnegative(),
+  cachedTokens: z.number().nonnegative().optional(),
+  cacheWriteTokens: z.number().nonnegative().optional(),
+  outputTokens: z.number().nonnegative(),
+  reasoningTokens: z.number().nonnegative().optional(),
+  totalTokens: z.number().nonnegative(),
+});
+export type TurnUsage = z.infer<typeof turnUsageSchema>;
+
 export const statsSchema = z.object({
   provider: z.string(),
   source: z.enum(["session", "unavailable", "unsupported"]),
@@ -15,6 +39,7 @@ export const statsSchema = z.object({
   toolMs: z.number().nonnegative().nullable(),
   ttftMs: z.number().nonnegative(),
   ttftSteps: z.number().int().nonnegative(),
+  turnUsages: z.array(turnUsageSchema).default([]),
   speedKind: z.literal("estimated"),
 });
 
@@ -40,6 +65,7 @@ export function emptyStats(provider: string, source: Stats["source"] = "session"
     toolMs: 0,
     ttftMs: 0,
     ttftSteps: 0,
+    turnUsages: [] as TurnUsage[],
     speedKind: "estimated",
   } satisfies Stats;
 }
@@ -60,10 +86,55 @@ export function averageTtft(stats: Stats): number | null {
 }
 
 export function cachePercent(stats: Stats): string | null {
-  if (stats.inputTokens <= 0) return null;
-  const pct = Math.min(100, (stats.cachedTokens / stats.inputTokens) * 100);
-  // Preserve the distinction between almost all and a complete cache hit.
-  return pct < 100 && pct >= 99.5 ? "99.9" : String(Math.round(pct));
+  return formatCacheHitPercent(stats.cachedTokens, stats.inputTokens);
+}
+
+export function formatCacheHitPercent(
+  cacheReadTokens: number,
+  promptTokens: number,
+  decimalPlaces: 0 | 1 = 0,
+): string | null {
+  if (promptTokens <= 0 || !Number.isFinite(promptTokens)) return null;
+  const cacheRead = Math.max(0, Math.min(cacheReadTokens, promptTokens));
+  if (cacheRead === promptTokens) return "100";
+  const scale = decimalPlaces === 0 ? 100 : 1000;
+
+  if (Number.isSafeInteger(cacheRead) && Number.isSafeInteger(promptTokens)) {
+    const denominator = BigInt(promptTokens);
+    const doubledCache = 2n * BigInt(cacheRead);
+    const rounded = Number((doubledCache * BigInt(scale) + denominator) / (2n * denominator));
+    if (rounded < scale) return String(rounded / (scale / 100));
+
+    // Find the first precision at which the rounded cache miss is at least one unit.
+    let doubledMiss = (2n * denominator - doubledCache) * 1000n;
+    let places = 1;
+    while (doubledMiss <= denominator) {
+      doubledMiss *= 10n;
+      places++;
+    }
+    const loss = Number((doubledMiss + denominator - 1n) / (2n * denominator));
+    return `99.${"9".repeat(places - 1)}${10 - loss}`;
+  }
+
+  const rounded = Math.round((cacheRead / promptTokens) * scale);
+  if (!(rounded >= scale)) return String(rounded / (scale / 100));
+  let loss = ((promptTokens - cacheRead) / promptTokens) * 1000;
+  let places = 1;
+  while (loss <= 0.5) {
+    loss *= 10;
+    places++;
+  }
+  return `99.${"9".repeat(places - 1)}${10 - Math.ceil(loss - 0.5)}`;
+}
+
+export function turnCachePercent(turn: TurnUsage): string | null {
+  return turn.cachedTokens === undefined
+    ? null
+    : formatCacheHitPercent(turn.cachedTokens, turn.inputTokens, 1);
+}
+
+export function formatExactTokens(value: number): string {
+  return Math.trunc(value).toLocaleString("en-US");
 }
 
 export function formatTokens(value: number): string {
