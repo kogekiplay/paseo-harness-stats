@@ -13,12 +13,14 @@ export default function contribute(server: PluginServerContext) {
     const result = await paseo.agents.ref(agentId).refresh();
     if (!result) return null;
     const agent = result.agent;
+    const sessionId = agent.persistence?.sessionId ?? agent.runtimeInfo?.sessionId ?? null;
+    // OpenCode's database is keyed by session ID, rather than a provider's opaque handle.
+    const handle = agent.provider === "opencode"
+      ? sessionId ?? agent.persistence?.nativeHandle ?? null
+      : agent.persistence?.nativeHandle ?? sessionId;
     return reader.read(
       agent.provider,
-      agent.persistence?.nativeHandle ??
-        agent.persistence?.sessionId ??
-        agent.runtimeInfo?.sessionId ??
-        null,
+      handle,
       agent.cwd,
       agent.model ?? agent.runtimeInfo?.model ?? null,
     );

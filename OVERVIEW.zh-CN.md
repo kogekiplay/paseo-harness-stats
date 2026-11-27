@@ -1,9 +1,9 @@
 Harness Stats 在 Paseo 输入框旁显示 DeepSeek Harness 风格的会话统计：轮数、模型步数、输出速度、累计 Token、缓存命中率与官方 API 费用（未定价模型自动省略）。点击对应读数，在原位展开会话统计或含分项费用的 Token 明细。桌面和网页端还会在每轮已完成回复的底部操作栏显示用量按钮（窄屏自动折叠为纯图标），已定价模型同步显示本轮费用，点击展开本轮用量弹窗，查看提供方 / 模型、缓存命中、单价、分项费用、未缓存输入、缓存读取、缓存写入、输出及推理 Token；iOS 和 Android 原生端提供精简不截断的底部用量/金额胶囊、支持「会话累计 / 按轮明细」双页签（含全部历史轮次）的原生用量弹窗，以及在新完成回复下方渲染的原生每轮用量胶囊与底部详情弹窗；代理详情面板同步展示会话累计、API 费用与按轮明细。状态行预留固定高度，切换工作区复用缓存，颜色及悬停、展开态跟随当前主题。插件设置页可分别开关会话统计和每轮用量，并选择手机端位置。
 
-需要 Paseo 0.15.4 或更新版本，支持连接主机上的 Codex、Claude Code 和 Antigravity 会话记录。Antigravity 需要 daemon 支持 Node 内置 SQLite，已用 Antigravity CLI 1.5.13 验证。桌面和网页端使用输入框下方状态行与回复底栏按钮，并自动隐藏手机端时间线用量行避免重复。0.15.4 原生手机客户端使用输入框上方位置，下方显示需要使用仓库附带扩展构建的客户端。
+需要 Paseo 0.15.4 或更新版本，支持连接主机上的 Codex、Claude Code、Antigravity 和 OpenCode 会话记录。Antigravity 和 OpenCode 需要 daemon 支持 Node 内置 SQLite。Antigravity 已用 Antigravity CLI 1.5.13 验证。桌面和网页端使用输入框下方状态行与回复底栏按钮，并自动隐藏手机端时间线用量行避免重复。0.15.4 原生手机客户端使用输入框上方位置，下方显示需要使用仓库附带扩展构建的客户端。
 
 安装前的历史也纳入累计，可见会话每两秒刷新。Token 总量包括输入和输出，缓存读取与写入只计一次，按轮明细省略未报告的可选字段。单轮及整段会话费用按模型官方 API 标准定价按步累计计算，包含未定价步骤时标注部分定价提示，未定价模型自动省略费用显示。步数按有用量的模型响应计算，不计没有用量记录的失败请求；子代理独立统计。
 
-Codex 根据新版模型输出起始时间戳计算 TTFT，Claude Code 使用首块思考耗时。Antigravity 读取 CLI 记录的首 Token 耗时，并与流式生成耗时相加得到模型用时。缺少时间样本时显示横线。
+Codex 根据新版模型输出起始时间戳计算 TTFT，Claude Code 使用首块思考耗时。Antigravity 读取 CLI 记录的首 Token 耗时，并与流式生成耗时相加得到模型用时。OpenCode V1 使用首个文本或推理块的起始时间。缺少时间样本时显示横线。
 
-插件读取 CODEX_HOME 或 ~/.codex、CLAUDE_CONFIG_DIR 或 ~/.claude，以及 ~/.gemini/antigravity-cli/conversations。仅向已连接的 Paseo 客户端返回聚合统计，不修改会话记录，也不请求外部统计服务。桌面页脚和回复底栏按钮使用 DOM 适配，Paseo 布局更新后可能需要同步调整。
+插件读取 CODEX_HOME 或 ~/.codex、CLAUDE_CONFIG_DIR 或 ~/.claude，以及 ~/.gemini/antigravity-cli/conversations。OpenCode V1 和 V2 的数据库位于 XDG_DATA_HOME/opencode 或 ~/.local/share/opencode，也可以通过 OPENCODE_DB 指定。仅向已连接的 Paseo 客户端返回聚合统计，不修改会话记录，也不请求外部统计服务。桌面页脚和回复底栏按钮使用 DOM 适配，Paseo 布局更新后可能需要同步调整。
