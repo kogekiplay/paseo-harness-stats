@@ -49,6 +49,10 @@ export const messages = defineTranslations({
       costLabel: "API cost",
       costOfficialHint: "Official API pricing",
       costPartialHint: "Official API pricing (partial)",
+      popoverSessionTab: "Session",
+      popoverTurnsTab: "By turn ({{count}})",
+      popoverLatestTurn: "Latest turn (Turn {{turn}})",
+      popoverViewTurns: "Inspect",
     },
     "zh-CN": {
       title: "会话统计",
@@ -97,6 +101,10 @@ export const messages = defineTranslations({
       costLabel: "API 费用",
       costOfficialHint: "按官方 API 标准定价",
       costPartialHint: "按官方 API 定价（不含未定价模型）",
+      popoverSessionTab: "会话累计",
+      popoverTurnsTab: "按轮明细 ({{count}})",
+      popoverLatestTurn: "最近一轮（第 {{turn}} 轮）",
+      popoverViewTurns: "查看",
     },
   },
 });

@@ -1680,3 +1680,116 @@ test("Unpriced sessions and turns omit currency and pricing hints and remain pur
     f.cleanup();
   }
 });
+
+test("Auxiliary turn-footer skips intervening data-plugin-row='true' rows and matches preceding assistant_<ts>_ rows", async () => {
+  const baseTs = 1700001000000;
+  const f = await turnFixture({
+    chatHtml:
+      `<div data-history-row-id="assistant_${baseTs + 10_000}_a1" data-index="0">Reply 1</div>` +
+      `<div data-history-row-id="vivid-activity/turn-time-1" data-plugin-row="true">12:00</div>` +
+      `<div data-history-row-id="assistant_${baseTs + 90_000}_decoy" data-plugin-row="true">Plugin decoy</div>` +
+      `<div data-history-row-id="harness-stats/turn-usage-1" data-plugin-row="true">Usage 1</div>` +
+      renderTurnFooterHtml({ timing: "Worked for 4s" }) +
+      `<div data-history-row-id="user_${baseTs + 20_000}_u2" data-testid="user-message">Next</div>` +
+      `<div data-history-row-id="assistant_${baseTs + 25_000}_a2" data-index="1">Reply 2</div>` +
+      `<div data-history-row-id="vivid-activity/turn-time-2" data-plugin-row="true">12:01</div>` +
+      `<div data-history-row-id="harness-stats/turn-usage-2" data-plugin-row="true">Usage 2</div>` +
+      renderTurnFooterHtml({ timing: "Worked for 6s" }) +
+      renderTurnFooterHtml({ rowId: `assistant_${baseTs + 90_000}_a3`, working: "indicator" }),
+    turnUsages: [
+      makeTurn({
+        turnNumber: 1,
+        messageIds: [],
+        startedAtMs: baseTs + 8_000,
+        completedAtMs: baseTs + 12_000,
+        totalTokens: 1500,
+      }),
+      makeTurn({
+        turnNumber: 2,
+        messageIds: [],
+        startedAtMs: baseTs + 23_000,
+        completedAtMs: baseTs + 27_000,
+        totalTokens: 2800,
+      }),
+      makeTurn({
+        turnNumber: 3,
+        messageIds: [],
+        startedAtMs: baseTs + 88_000,
+        completedAtMs: baseTs + 92_000,
+        totalTokens: 9900,
+      }),
+    ],
+  });
+  try {
+    const buttons = Array.from(
+      f.doc.querySelectorAll<HTMLButtonElement>("[data-harness-turn-usage-button]"),
+    );
+    assert.equal(buttons.length, 2);
+    assert.equal(buttons[0].getAttribute("data-harness-turn-usage-button"), "1");
+    assert.equal(buttons[0].textContent, "用量 1.5K tok");
+    assert.equal(buttons[1].getAttribute("data-harness-turn-usage-button"), "2");
+    assert.equal(buttons[1].textContent, "用量 2.8K tok");
+
+    const vividRow = f.doc.querySelector<HTMLElement>(
+      '[data-history-row-id="vivid-activity/turn-time-1"]',
+    )!;
+    const harnessRow = f.doc.querySelector<HTMLElement>(
+      '[data-history-row-id="harness-stats/turn-usage-1"]',
+    )!;
+    assert.notEqual(f.win.getComputedStyle(vividRow).display, "none");
+    assert.equal(f.win.getComputedStyle(harnessRow).display, "none");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Web injects [data-harness-turn-usage-row-hide] style, cleans it up on dispose, and isolates hide-only mode when both toggles are off", async () => {
+  const f1 = await turnFixture({
+    chatHtml:
+      `<div data-history-row-id="harness-stats/turn-usage-1" data-plugin-row="true">Hidden on desktop</div>` +
+      renderTurnFooterHtml({ rowId: "m1", messageId: "m1" }),
+    turnUsages: [makeTurn({ turnNumber: 1, messageIds: ["m1"], totalTokens: 3200 })],
+    showFooter: true,
+    showTurnUsage: true,
+  });
+  try {
+    const hideStyle = f1.doc.querySelector<HTMLStyleElement>("[data-harness-turn-usage-row-hide]");
+    assert.ok(hideStyle);
+    assert.match(
+      hideStyle.textContent ?? "",
+      /\[data-history-row-id\^="harness-stats\/"\]\[data-plugin-row="true"\].*display:\s*none\s*!important/,
+    );
+    const pluginRow = f1.doc.querySelector<HTMLElement>(
+      '[data-history-row-id="harness-stats/turn-usage-1"]',
+    )!;
+    assert.equal(f1.win.getComputedStyle(pluginRow).display, "none");
+    f1.dispose();
+    assert.equal(f1.doc.querySelector("[data-harness-turn-usage-row-hide]"), null);
+  } finally {
+    f1.cleanup();
+  }
+
+  const f2 = await turnFixture({
+    chatHtml:
+      `<div data-history-row-id="harness-stats/turn-usage-1" data-plugin-row="true">Hidden even when disabled</div>` +
+      renderTurnFooterHtml({ rowId: "m1", messageId: "m1" }),
+    turnUsages: [makeTurn({ turnNumber: 1, messageIds: ["m1"], totalTokens: 3200 })],
+    showFooter: false,
+    showTurnUsage: false,
+  });
+  try {
+    assert.ok(f2.doc.querySelector("[data-harness-turn-usage-row-hide]"));
+    assert.equal(f2.doc.querySelector("[data-harness-stats-reservation]"), null);
+    assert.equal(f2.doc.querySelector("[data-harness-turn-usage-style]"), null);
+    assert.equal(f2.doc.querySelector("[data-harness-stats]"), null);
+    assert.equal(f2.doc.querySelector("[data-harness-turn-usage-button]"), null);
+    const pluginRow = f2.doc.querySelector<HTMLElement>(
+      '[data-history-row-id="harness-stats/turn-usage-1"]',
+    )!;
+    assert.equal(f2.win.getComputedStyle(pluginRow).display, "none");
+    f2.dispose();
+    assert.equal(f2.doc.querySelector("[data-harness-turn-usage-row-hide]"), null);
+  } finally {
+    f2.cleanup();
+  }
+});

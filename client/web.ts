@@ -304,7 +304,8 @@ interface FooterCandidate {
   isVirtualized: boolean;
 }
 
-function isUserHistoryRow(row: Element): boolean {
+function isIgnoredHistoryRow(row: Element): boolean {
+  if (row.getAttribute("data-plugin-row") === "true") return true;
   const rowId = row.getAttribute("data-history-row-id");
   if (rowId && rowId.startsWith("user_")) return true;
   return (
@@ -363,7 +364,7 @@ function matchTurnsToFooters(
       if (isAuxiliary) {
         for (let r = recentRows.length - 1; r >= 0; r--) {
           const recent = recentRows[r];
-          if (isUserHistoryRow(recent)) continue;
+          if (isIgnoredHistoryRow(recent)) continue;
           fallbackRows.push({
             rowId: recent.getAttribute("data-history-row-id"),
             messageId: recent.getAttribute("data-message-id"),
@@ -607,8 +608,18 @@ function mountTurnButton(footerEl: Element, button: Element) {
 export function installFooter(options: Options): () => void {
   const showFooter = options.showFooter ?? true;
   const showTurnUsage = options.showTurnUsage ?? true;
-  if (!options.isWeb || (!showFooter && !showTurnUsage) || typeof document === "undefined")
-    return () => {};
+  if (!options.isWeb || typeof document === "undefined") return () => {};
+  const pluginRowHideStyle = element(
+    "style",
+    '[data-history-row-id^="harness-stats/"][data-plugin-row="true"] { display: none !important; }',
+  );
+  pluginRowHideStyle.setAttribute("data-harness-turn-usage-row-hide", "");
+  document.body.append(pluginRowHideStyle);
+  if (!showFooter && !showTurnUsage) {
+    return () => {
+      pluginRowHideStyle.remove();
+    };
+  }
   const footers = new Map<Element, Footer>();
   let disposed = false,
     mutating = false,
@@ -1648,6 +1659,7 @@ export function installFooter(options: Options): () => void {
     observer?.disconnect();
     removeTheme?.();
     close();
+    pluginRowHideStyle.remove();
     reservation?.remove();
     turnUsageStyle?.remove();
     document.removeEventListener("pointerdown", outside, true);

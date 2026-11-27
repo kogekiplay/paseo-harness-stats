@@ -14,11 +14,16 @@ import {
   formatDuration,
   formatTokens,
   readStats,
-  speed,
   totalTokens,
   type Stats,
 } from "./shared/stats";
+import {
+  TURN_USAGE_ROW_KIND,
+  TURN_USAGE_ROW_VERSION,
+  turnUsageRowSchema,
+} from "./shared/turn-usage-row";
 import { ActivityPopover, UsagePopover } from "./client/popover";
+import { TurnUsageRow } from "./client/turn-usage-row";
 import { ThemeBridge } from "./client/theme-bridge";
 import { getTheme, subscribeTheme } from "./client/theme-state";
 import { StatsCache } from "./client/cache";
@@ -58,11 +63,15 @@ export default function contribute(client: PluginClientContext) {
     context: "agent",
     onSelect: ({ openPanel }) => openPanel("stats"),
   });
+  const removeTurnUsageRenderer = client.addTimelineRenderer({
+    kind: TURN_USAGE_ROW_KIND,
+    version: TURN_USAGE_ROW_VERSION,
+    schema: turnUsageRowSchema,
+    Component: TurnUsageRow,
+  });
   const createFooter = () =>
     installFooter({
-      isWeb:
-        Platform.OS === "web" &&
-        (currentPreferences.enabled || currentPreferences.turnUsageEnabled),
+      isWeb: Platform.OS === "web",
       showFooter: currentPreferences.enabled,
       showTurnUsage: currentPreferences.turnUsageEnabled,
       hasAgent: (id) => agents.has(id),
@@ -154,24 +163,18 @@ export default function contribute(client: PluginClientContext) {
     if (Platform.OS !== "web" && !pills.has(`${agent.id}:activity`)) {
       const updateLabels = (stats: Stats) => {
         if (lifetime.signal.aborted || stats.source !== "session") return;
-        const tps = speed(stats),
-          cacheHit = cachePercent(stats);
+        const cacheHit = cachePercent(stats);
         pills
           .get(`${agent.id}:activity`)
           ?.update({
-            label:
-              client.i18n.t(messages, "counts", { turns: stats.turns, steps: stats.steps }) +
-              (tps === null ? "" : ` · ${Math.round(tps)} tok/s`),
+            label: client.i18n.t(messages, "counts", { turns: stats.turns, steps: stats.steps }),
           });
         pills
           .get(`${agent.id}:usage`)
           ?.update({
-            label:
-              `${formatTokens(totalTokens(stats))} tok` +
-              (cacheHit === null
-                ? ""
-                : ` · ${client.i18n.t(messages, "cache", { percent: cacheHit })}`) +
-              (stats.cost ? ` · ${formatUsd(stats.cost.totalUsd, "compact")}` : ""),
+            label: stats.cost
+              ? `${formatTokens(totalTokens(stats))} tok · ${formatUsd(stats.cost.totalUsd, "compact")}`
+              : `${formatTokens(totalTokens(stats))} tok${cacheHit === null ? "" : ` · ${cacheHit}%`}`,
           });
       };
       // The source patch adds this optional field. Older clients keep their track placement.
@@ -243,6 +246,7 @@ export default function contribute(client: PluginClientContext) {
     removeThemeBridge();
     removePreferences();
     removeSettings();
+    removeTurnUsageRenderer();
     removeCommand();
     removePanel();
     for (const pill of pills.values()) pill.remove();
