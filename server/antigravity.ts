@@ -1,4 +1,4 @@
-import { realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type * as Sqlite from "node:sqlite";
@@ -6,6 +6,7 @@ import { aggregateSessionCost } from "../shared/pricing";
 import { emptyStats, type Stats } from "../shared/stats";
 import { fields, firstIndex, milliseconds } from "./antigravity-protobuf";
 import { TurnUsageAccumulator } from "./fold";
+import { builtinSqlite, databaseFingerprint } from "./session-database";
 
 const provider = "antigravity";
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -205,16 +206,6 @@ function snapshot({ stats, turns }: SessionSummary, fallbackModel?: string | nul
   return { ...stats, turnUsages, ...(cost && { cost }) };
 }
 
-async function fingerprint(path: string): Promise<string | null> {
-  try {
-    const file = await stat(path, { bigint: true });
-    return file.isFile() ? `${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}` : null;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
 export class AntigravityReader {
   private cache = new Map<string, { signature: string; summary: SessionSummary }>();
 
@@ -222,10 +213,10 @@ export class AntigravityReader {
 
   async read(handle: string | null, fallbackModel?: string | null): Promise<Stats> {
     const id = conversationId(handle);
-    const sqlite = process.getBuiltinModule?.("node:sqlite") as typeof Sqlite | undefined;
+    const sqlite = builtinSqlite();
     if (!id || !sqlite) return emptyStats(provider, "unavailable");
     const path = join(this.root, "conversations", `${id}.db`);
-    const [main, wal] = await Promise.all([fingerprint(path), fingerprint(`${path}-wal`)]);
+    const [main, wal] = await Promise.all([databaseFingerprint(path), databaseFingerprint(`${path}-wal`)]);
     if (!main) return emptyStats(provider, "unavailable");
     const directory = await realpath(join(this.root, "conversations"));
     const file = join(directory, `${id}.db`);

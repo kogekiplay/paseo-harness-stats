@@ -6,6 +6,7 @@ import { StringDecoder } from "node:string_decoder";
 import { emptyStats, type Stats } from "../shared/stats";
 import { AntigravityReader } from "./antigravity";
 import { SessionFold } from "./fold";
+import { OpenCodeReader } from "./opencode";
 
 interface CachedSession {
   fold: SessionFold;
@@ -23,14 +24,16 @@ export class SessionReader {
   private indexAt = 0;
   private indexing: Promise<void> | null = null;
   private antigravity: AntigravityReader;
+  private opencode: OpenCodeReader;
   constructor(
-    private roots = {
+    private roots: { codex: string; claude: string; opencode?: string } = {
       codex: process.env.CODEX_HOME || join(homedir(), ".codex"),
       claude: process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
     },
     antigravityRoot?: string,
   ) {
     this.antigravity = new AntigravityReader(antigravityRoot);
+    this.opencode = new OpenCodeReader(roots.opencode);
   }
 
   private async exists(path: string): Promise<boolean> {
@@ -102,6 +105,7 @@ export class SessionReader {
     fallbackModel?: string | null,
   ): Promise<Stats> {
     if (provider === "antigravity") return this.antigravity.read(sessionId, fallbackModel);
+    if (provider === "opencode") return this.opencode.read(sessionId, fallbackModel);
     if (provider !== "codex" && provider !== "claude") return emptyStats(provider, "unsupported");
     if (!sessionId) return emptyStats(provider, "unavailable");
     const path = await this.locate(provider, sessionId, cwd);
@@ -175,6 +179,7 @@ export class SessionReader {
   }
   clear() {
     this.antigravity.clear();
+    this.opencode.clear();
     this.cache.clear();
     this.codexPaths.clear();
   }
