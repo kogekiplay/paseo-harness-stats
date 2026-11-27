@@ -46,6 +46,9 @@ export const messages = defineTranslations({
       turnUsageReasoning: " ({{tokens}} reasoning)",
       turnUsageSection: "Per-turn usage",
       turnUsageItem: "Turn {{turn}}",
+      costLabel: "API cost",
+      costOfficialHint: "Official API pricing",
+      costPartialHint: "Official API pricing (partial)",
     },
     "zh-CN": {
       title: "会话统计",
@@ -91,6 +94,9 @@ export const messages = defineTranslations({
       turnUsageReasoning: "（其中推理 {{tokens}}）",
       turnUsageSection: "按轮用量",
       turnUsageItem: "第 {{turn}} 轮",
+      costLabel: "API 费用",
+      costOfficialHint: "按官方 API 标准定价",
+      costPartialHint: "按官方 API 定价（不含未定价模型）",
     },
   },
 });

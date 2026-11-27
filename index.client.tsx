@@ -8,6 +8,7 @@ import { Platform } from "react-native";
 import { StatsPanel } from "./client/panel";
 import { installFooter } from "./client/web";
 import { messages } from "./client/messages";
+import { formatUsd } from "./shared/pricing";
 import {
   cachePercent,
   formatDuration,
@@ -97,6 +98,8 @@ export default function contribute(client: PluginClientContext) {
         turnCacheWrite: client.i18n.t(messages, "turnUsageCacheWrite"),
         turnOutput: client.i18n.t(messages, "turnUsageOutput"),
         turnReasoning: (tokens) => client.i18n.t(messages, "turnUsageReasoning", { tokens }),
+        costOfficialHint: client.i18n.t(messages, "costOfficialHint"),
+        costPartialHint: client.i18n.t(messages, "costPartialHint"),
       }),
     });
   let removeFooter = createFooter();
@@ -167,7 +170,8 @@ export default function contribute(client: PluginClientContext) {
               `${formatTokens(totalTokens(stats))} tok` +
               (cacheHit === null
                 ? ""
-                : ` · ${client.i18n.t(messages, "cache", { percent: cacheHit })}`),
+                : ` · ${client.i18n.t(messages, "cache", { percent: cacheHit })}`) +
+              (stats.cost ? ` · ${formatUsd(stats.cost.totalUsd, "compact")}` : ""),
           });
       };
       // The source patch adds this optional field. Older clients keep their track placement.

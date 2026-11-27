@@ -2,9 +2,10 @@ import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type * as Sqlite from "node:sqlite";
+import { aggregateSessionCost } from "../shared/pricing";
 import { emptyStats, type Stats } from "../shared/stats";
 import { fields, firstIndex, milliseconds } from "./antigravity-protobuf";
-import { TurnUsageAccumulator, withFallbackRoutes } from "./fold";
+import { TurnUsageAccumulator } from "./fold";
 
 const provider = "antigravity";
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -60,8 +61,13 @@ interface PlannerStep {
   usage: ReturnType<typeof responseUsage>;
 }
 
+interface SessionSummary {
+  stats: Stats;
+  turns: TurnUsageAccumulator[];
+}
+
 /** Reads aggregate fields from the CLI's generator and step metadata. */
-function summarize(db: Sqlite.DatabaseSync): Stats {
+function summarize(db: Sqlite.DatabaseSync): SessionSummary {
   const stats: Stats = emptyStats(provider);
   stats.modelMs = null;
   const turns = new Set<number>();
@@ -134,7 +140,11 @@ function summarize(db: Sqlite.DatabaseSync): Stats {
     }
     turn.addMessage(id);
     turn.addModel(model);
-    turn.addStep(usage.tokens);
+    turn.addStep({
+      ...usage.tokens,
+      model,
+      timestampMs: planner?.completedAtMs ?? planner?.startedAtMs ?? null,
+    });
     stats.inputTokens += input;
     stats.cachedTokens += cachedTokens ?? 0;
     stats.cacheWriteTokens += cacheWriteTokens ?? 0;
@@ -184,12 +194,15 @@ function summarize(db: Sqlite.DatabaseSync): Stats {
       start !== null && finish !== null ? finish - start : null,
     );
   }
-  for (const turn of [fallback, ...prompts.map(({ usage }) => usage)]) {
-    if (turn.billed) stats.turnUsages.push(turn.snapshot(stats.turnUsages.length + 1));
-  }
   stats.turns = turns.size;
   stats.toolMs = hasTools ? toolMs : 0;
-  return stats;
+  return { stats, turns: [fallback, ...prompts.map(({ usage }) => usage)].filter((turn) => turn.billed) };
+}
+
+function snapshot({ stats, turns }: SessionSummary, fallbackModel?: string | null): Stats {
+  const turnUsages = turns.map((turn, index) => turn.snapshot(index + 1, fallbackModel));
+  const cost = aggregateSessionCost(turnUsages);
+  return { ...stats, turnUsages, ...(cost && { cost }) };
 }
 
 async function fingerprint(path: string): Promise<string | null> {
@@ -203,7 +216,7 @@ async function fingerprint(path: string): Promise<string | null> {
 }
 
 export class AntigravityReader {
-  private cache = new Map<string, { signature: string; stats: Stats }>();
+  private cache = new Map<string, { signature: string; summary: SessionSummary }>();
 
   constructor(private root = join(homedir(), ".gemini", "antigravity-cli")) {}
 
@@ -219,17 +232,17 @@ export class AntigravityReader {
     if (await realpath(path) !== file) return emptyStats(provider, "unavailable");
     const signature = `${main}/${wal ?? ""}`;
     const cached = this.cache.get(file);
-    if (cached?.signature === signature) return withFallbackRoutes(structuredClone(cached.stats), fallbackModel);
+    if (cached?.signature === signature) return snapshot(cached.summary, fallbackModel);
 
     const db = new sqlite.DatabaseSync(file, { readOnly: true });
     try {
       // One snapshot keeps prompt boundaries, tools and generations in sync while agy writes.
       db.exec("BEGIN");
-      const stats = summarize(db);
+      const summary = summarize(db);
       this.cache.delete(file);
-      this.cache.set(file, { signature, stats });
+      this.cache.set(file, { signature, summary });
       if (this.cache.size > 32) this.cache.delete(this.cache.keys().next().value!);
-      return withFallbackRoutes(structuredClone(stats), fallbackModel);
+      return snapshot(summary, fallbackModel);
     } finally {
       db.close();
     }

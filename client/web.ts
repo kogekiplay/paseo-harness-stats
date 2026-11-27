@@ -1,3 +1,4 @@
+import { formatRatePerMillion, formatUsd } from "../shared/pricing";
 import {
   averageTtft,
   cachePercent,
@@ -7,6 +8,7 @@ import {
   speed,
   totalTokens,
   turnCachePercent,
+  type CostBreakdown,
   type Stats,
   type TurnUsage,
 } from "../shared/stats";
@@ -110,6 +112,8 @@ export interface FooterCopy {
   turnCacheWrite?: string;
   turnOutput?: string;
   turnReasoning?(tokens: string): string;
+  costOfficialHint?: string;
+  costPartialHint?: string;
 }
 interface Options {
   isWeb: boolean;
@@ -673,10 +677,29 @@ export function installFooter(options: Options): () => void {
     const total = `${formatTokens(turn.totalTokens)} tok`;
     return copy.turnConsumed ? copy.turnConsumed(total) : `Usage ${total}`;
   }
+  function formatCostHint(copy: FooterCopy, complete: boolean) {
+    return complete
+      ? (copy.costOfficialHint ?? "Official API pricing")
+      : (copy.costPartialHint ?? "Official API pricing (partial)");
+  }
+  function formatSessionUsage(copy: FooterCopy, stats: Stats) {
+    const cache = cachePercent(stats);
+    const label =
+      `${formatTokens(totalTokens(stats))} tok` +
+      (cache === null ? "" : ` · ${copy.cache(cache)}`) +
+      (stats.cost ? ` · ${formatUsd(stats.cost.totalUsd, "compact")}` : "");
+    const detail =
+      `${totalTokens(stats).toLocaleString()} tok` +
+      (stats.cost ? ` · ${formatUsd(stats.cost.totalUsd, "detail")}` : "");
+    return { label, title: `${label}\n${detail}` };
+  }
   function paintTurnButton(footer: Footer, entry: TurnButtonEntry) {
     const theme = palette(footer.root);
     const copy = options.copy();
-    const triggerText = formatTurnConsumed(copy, entry.turn);
+    const baseTriggerText = formatTurnConsumed(copy, entry.turn);
+    const triggerText = entry.turn.cost
+      ? `${baseTriggerText} · ${formatUsd(entry.turn.cost.totalUsd, "compact")}`
+      : baseTriggerText;
     const open = popup?.anchor === entry.button;
     const highlighted = open || entry.hovered;
     const turnAttr = String(entry.turn.turnNumber);
@@ -687,7 +710,11 @@ export function installFooter(options: Options): () => void {
     if (entry.button.getAttribute("aria-label") !== triggerText) {
       entry.button.setAttribute("aria-label", triggerText);
     }
-    const nextTitle = open ? "" : `${triggerText}\n${formatExactTokens(entry.turn.totalTokens)} tok`;
+    const nextTitle = open
+      ? ""
+      : entry.turn.cost
+        ? `${triggerText}\n${formatExactTokens(entry.turn.totalTokens)} tok · ${formatUsd(entry.turn.cost.totalUsd, "detail")}`
+        : `${triggerText}\n${formatExactTokens(entry.turn.totalTokens)} tok`;
     if (entry.button.title !== nextTitle) entry.button.title = nextTitle;
     entry.button.style.background = highlighted ? theme.selected : "transparent";
     entry.button.style.color = highlighted ? theme.foreground : theme.muted;
@@ -714,11 +741,7 @@ export function installFooter(options: Options): () => void {
               copy.counts(stats.turns, stats.steps) +
               (tps === null ? "" : ` · ${Math.round(tps)} tok/s`);
           } else if (current.kind === "usage" && current.footer.usage) {
-            const cache = cachePercent(stats);
-            const usage =
-              `${formatTokens(totalTokens(stats))} tok` +
-              (cache === null ? "" : ` · ${copy.cache(cache)}`);
-            current.footer.usage.button.title = `${usage}\n${totalTokens(stats).toLocaleString()} tok`;
+            current.footer.usage.button.title = formatSessionUsage(copy, stats).title;
           }
         }
       }
@@ -765,32 +788,144 @@ export function installFooter(options: Options): () => void {
       const input = footer.root.querySelector('textarea, [contenteditable="true"], input');
       panel.style.fontFamily = getComputedStyle(input ?? footer.root).fontFamily;
 
-      if (current.kind === "turn-usage") {
-        paintTurnButton(footer, current.entry);
-        const turn = current.entry.turn;
+      const buildCostHeading = (
+        titleText: string,
+        cost: CostBreakdown,
+        exactTotalText: string,
+      ) => {
         const heading = element("div", undefined, {
           display: "flex",
-          alignItems: "center",
-          gap: "9px",
+          flexDirection: "column",
+          gap: "4px",
           paddingBottom: "16px",
           marginBottom: "15px",
           borderBottom: `1px solid ${theme.border}`,
         });
-        const title = element("span", copy.turnTitle ?? "Turn usage", {
+        const topRow = element("div", undefined, {
+          display: "flex",
+          alignItems: "center",
+          gap: "9px",
+        });
+        const title = element("span", titleText, {
           flex: "1",
           fontWeight: "600",
         });
         title.id = `${panel.id}-title`;
-        heading.append(
+        topRow.append(
           glyph("usage", 16),
           title,
-          element("span", `${formatExactTokens(turn.totalTokens)} tok`, {
+          element("span", formatUsd(cost.totalUsd, "detail"), {
             fontWeight: "600",
+            whiteSpace: "nowrap",
+            fontVariantNumeric: "tabular-nums",
+            color: theme.foreground,
+          }),
+        );
+        const subRow = element("div", undefined, {
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: "12px",
+          fontSize: "12px",
+          color: theme.muted,
+        });
+        subRow.append(
+          element("span", formatCostHint(copy, cost.complete)),
+          element("span", exactTotalText, {
             whiteSpace: "nowrap",
             fontVariantNumeric: "tabular-nums",
           }),
         );
+        heading.append(topRow, subRow);
         panel.setAttribute("aria-labelledby", title.id);
+        return heading;
+      };
+
+      const buildCostRow = (
+        label: string,
+        usd: number,
+        tokensEl: Element,
+        rate?: number,
+      ) => {
+        const row = element("div", undefined, {
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: "16px",
+        });
+        const left = element("div", undefined, {
+          display: "flex",
+          flexDirection: "column",
+          gap: "2px",
+          flexShrink: "0",
+        });
+        left.append(element("span", label));
+        if (rate !== undefined) {
+          left.append(
+            element("span", formatRatePerMillion(rate), {
+              fontSize: "11px",
+              opacity: "0.78",
+              fontVariantNumeric: "tabular-nums",
+            }),
+          );
+        }
+        const right = element("div", undefined, {
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: "2px",
+          textAlign: "right",
+          fontVariantNumeric: "tabular-nums",
+          minWidth: "0",
+        });
+        right.append(
+          element("span", formatUsd(usd, "detail"), {
+            color: theme.foreground,
+            fontWeight: "500",
+            whiteSpace: "nowrap",
+          }),
+          tokensEl,
+        );
+        row.append(left, right);
+        return row;
+      };
+
+      if (current.kind === "turn-usage") {
+        paintTurnButton(footer, current.entry);
+        const turn = current.entry.turn;
+        const turnCost = turn.cost;
+        let heading: Element;
+        if (turnCost) {
+          heading = buildCostHeading(
+            copy.turnTitle ?? "Turn usage",
+            turnCost,
+            `${formatExactTokens(turn.totalTokens)} tok`,
+          );
+        } else {
+          heading = element("div", undefined, {
+            display: "flex",
+            alignItems: "center",
+            gap: "9px",
+            paddingBottom: "16px",
+            marginBottom: "15px",
+            borderBottom: `1px solid ${theme.border}`,
+          });
+          const title = element("span", copy.turnTitle ?? "Turn usage", {
+            flex: "1",
+            fontWeight: "600",
+          });
+          title.id = `${panel.id}-title`;
+          heading.append(
+            glyph("usage", 16),
+            title,
+            element("span", `${formatExactTokens(turn.totalTokens)} tok`, {
+              fontWeight: "600",
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }),
+          );
+          panel.setAttribute("aria-labelledby", title.id);
+        }
         const body = element("div", undefined, {
           display: "flex",
           flexDirection: "column",
@@ -838,59 +973,127 @@ export function installFooter(options: Options): () => void {
             }),
           );
         }
-        appendRow(
-          copy.turnInput ?? copy.uncached,
-          element("span", `${formatExactTokens(turn.uncachedInputTokens)} tok`, {
-            textAlign: "right",
-            whiteSpace: "nowrap",
-            fontVariantNumeric: "tabular-nums",
-            color: theme.foreground,
-          }),
-        );
-        if (turn.cachedTokens !== undefined) {
-          appendRow(
-            copy.turnCacheRead ?? copy.cacheRead,
-            element("span", `${formatExactTokens(turn.cachedTokens)} tok`, {
-              textAlign: "right",
-              whiteSpace: "nowrap",
-              fontVariantNumeric: "tabular-nums",
-              color: theme.foreground,
-            }),
-          );
-        }
-        if (turn.cacheWriteTokens !== undefined && turn.cacheWriteTokens > 0) {
-          appendRow(
-            copy.turnCacheWrite ?? copy.cacheWrite,
-            element("span", `${formatExactTokens(turn.cacheWriteTokens)} tok`, {
-              textAlign: "right",
-              whiteSpace: "nowrap",
-              fontVariantNumeric: "tabular-nums",
-              color: theme.foreground,
-            }),
-          );
-        }
-        const outputValue = element("span", undefined, {
-          textAlign: "right",
-          fontVariantNumeric: "tabular-nums",
-          color: theme.foreground,
-        });
-        outputValue.append(
-          element("span", `${formatExactTokens(turn.outputTokens)} tok`, {
-            whiteSpace: "nowrap",
-          }),
-        );
-        if (turn.reasoningTokens !== undefined && turn.reasoningTokens > 0) {
-          const reasoningText = (
-            copy.turnReasoning ?? ((tokens: string) => ` (${tokens} reasoning)`)
-          )(`${formatExactTokens(turn.reasoningTokens)} tok`);
-          outputValue.append(
-            element("span", reasoningText, {
+        if (turnCost) {
+          const tokenSub = (text: string) =>
+            element("span", text, {
+              fontSize: "12px",
               color: theme.muted,
               whiteSpace: "nowrap",
+            });
+          body.append(
+            buildCostRow(
+              copy.turnInput ?? copy.uncached,
+              turnCost.uncachedInputUsd,
+              tokenSub(`${formatExactTokens(turn.uncachedInputTokens)} tok`),
+              turnCost.ratesPerMillion?.uncachedInput,
+            ),
+          );
+          if (turn.cachedTokens !== undefined) {
+            body.append(
+              buildCostRow(
+                copy.turnCacheRead ?? copy.cacheRead,
+                turnCost.cachedInputUsd,
+                tokenSub(`${formatExactTokens(turn.cachedTokens)} tok`),
+                turnCost.ratesPerMillion?.cachedInput,
+              ),
+            );
+          }
+          if (turn.cacheWriteTokens !== undefined && turn.cacheWriteTokens > 0) {
+            body.append(
+              buildCostRow(
+                copy.turnCacheWrite ?? copy.cacheWrite,
+                turnCost.cacheWriteUsd,
+                tokenSub(`${formatExactTokens(turn.cacheWriteTokens)} tok`),
+                turnCost.ratesPerMillion?.cacheWrite,
+              ),
+            );
+          }
+          const outputTokensEl = element("span", undefined, {
+            fontSize: "12px",
+            color: theme.muted,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          });
+          outputTokensEl.append(
+            element("span", `${formatExactTokens(turn.outputTokens)} tok`, {
+              whiteSpace: "nowrap",
             }),
           );
+          if (turn.reasoningTokens !== undefined && turn.reasoningTokens > 0) {
+            const reasoningText = (
+              copy.turnReasoning ?? ((tokens: string) => ` (${tokens} reasoning)`)
+            )(`${formatExactTokens(turn.reasoningTokens)} tok`);
+            outputTokensEl.append(
+              element("span", reasoningText, {
+                color: theme.muted,
+                opacity: "0.78",
+                whiteSpace: "nowrap",
+              }),
+            );
+          }
+          body.append(
+            buildCostRow(
+              copy.turnOutput ?? copy.output,
+              turnCost.outputUsd,
+              outputTokensEl,
+              turnCost.ratesPerMillion?.output,
+            ),
+          );
+        } else {
+          appendRow(
+            copy.turnInput ?? copy.uncached,
+            element("span", `${formatExactTokens(turn.uncachedInputTokens)} tok`, {
+              textAlign: "right",
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+              color: theme.foreground,
+            }),
+          );
+          if (turn.cachedTokens !== undefined) {
+            appendRow(
+              copy.turnCacheRead ?? copy.cacheRead,
+              element("span", `${formatExactTokens(turn.cachedTokens)} tok`, {
+                textAlign: "right",
+                whiteSpace: "nowrap",
+                fontVariantNumeric: "tabular-nums",
+                color: theme.foreground,
+              }),
+            );
+          }
+          if (turn.cacheWriteTokens !== undefined && turn.cacheWriteTokens > 0) {
+            appendRow(
+              copy.turnCacheWrite ?? copy.cacheWrite,
+              element("span", `${formatExactTokens(turn.cacheWriteTokens)} tok`, {
+                textAlign: "right",
+                whiteSpace: "nowrap",
+                fontVariantNumeric: "tabular-nums",
+                color: theme.foreground,
+              }),
+            );
+          }
+          const outputValue = element("span", undefined, {
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+            color: theme.foreground,
+          });
+          outputValue.append(
+            element("span", `${formatExactTokens(turn.outputTokens)} tok`, {
+              whiteSpace: "nowrap",
+            }),
+          );
+          if (turn.reasoningTokens !== undefined && turn.reasoningTokens > 0) {
+            const reasoningText = (
+              copy.turnReasoning ?? ((tokens: string) => ` (${tokens} reasoning)`)
+            )(`${formatExactTokens(turn.reasoningTokens)} tok`);
+            outputValue.append(
+              element("span", reasoningText, {
+                color: theme.muted,
+                whiteSpace: "nowrap",
+              }),
+            );
+          }
+          appendRow(copy.turnOutput ?? copy.output, outputValue);
         }
-        appendRow(copy.turnOutput ?? copy.output, outputValue);
         panel.replaceChildren(heading, body);
         position();
         return;
@@ -899,31 +1102,41 @@ export function installFooter(options: Options): () => void {
       const { kind } = current,
         stats = footer.stats;
       paintButtons(footer);
-      const heading = element("div", undefined, {
-        display: "flex",
-        alignItems: "center",
-        gap: "9px",
-        paddingBottom: "16px",
-        marginBottom: "15px",
-        borderBottom: `1px solid ${theme.border}`,
-      });
-      const title = element("span", kind === "activity" ? copy.details : copy.tokenTitle, {
-        flex: "1",
-        fontWeight: "600",
-      });
-      title.id = `${panel.id}-title`;
-      const value =
-        stats && !footer.error
-          ? kind === "activity"
-            ? copy.counts(stats.turns, stats.steps)
-            : `${totalTokens(stats).toLocaleString()} tok`
-          : "";
-      heading.append(
-        glyph(kind),
-        title,
-        element("span", value, { fontWeight: "600", whiteSpace: "nowrap" }),
-      );
-      panel.setAttribute("aria-labelledby", title.id);
+      const usageCost = kind === "usage" && stats && !footer.error ? stats.cost : undefined;
+      let heading: Element;
+      if (usageCost && stats) {
+        heading = buildCostHeading(
+          copy.tokenTitle,
+          usageCost,
+          `${formatExactTokens(totalTokens(stats))} tok`,
+        );
+      } else {
+        heading = element("div", undefined, {
+          display: "flex",
+          alignItems: "center",
+          gap: "9px",
+          paddingBottom: "16px",
+          marginBottom: "15px",
+          borderBottom: `1px solid ${theme.border}`,
+        });
+        const title = element("span", kind === "activity" ? copy.details : copy.tokenTitle, {
+          flex: "1",
+          fontWeight: "600",
+        });
+        title.id = `${panel.id}-title`;
+        const value =
+          stats && !footer.error
+            ? kind === "activity"
+              ? copy.counts(stats.turns, stats.steps)
+              : `${totalTokens(stats).toLocaleString()} tok`
+            : "";
+        heading.append(
+          glyph(kind),
+          title,
+          element("span", value, { fontWeight: "600", whiteSpace: "nowrap" }),
+        );
+        panel.setAttribute("aria-labelledby", title.id);
+      }
       const body = element("div", undefined, {
         display: "flex",
         flexDirection: "column",
@@ -932,7 +1145,67 @@ export function installFooter(options: Options): () => void {
         fontSize: "13px",
       });
       if (!stats || footer.error) body.append(element("span", footer.error ?? copy.loading));
-      else {
+      else if (usageCost) {
+        const cache = cachePercent(stats);
+        const uncachedTokens = Math.max(
+          0,
+          stats.inputTokens - stats.cachedTokens - stats.cacheWriteTokens,
+        );
+        const cacheRow = element("div", undefined, {
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          gap: "16px",
+        });
+        cacheRow.append(
+          element("span", copy.cacheLabel),
+          element("span", cache === null ? "—" : `${cache}%`, {
+            textAlign: "right",
+            whiteSpace: "nowrap",
+            fontVariantNumeric: "tabular-nums",
+            color: theme.foreground,
+          }),
+        );
+        body.append(cacheRow);
+        const tokenSub = (text: string) =>
+          element("span", text, {
+            fontSize: "12px",
+            color: theme.muted,
+            whiteSpace: "nowrap",
+          });
+        body.append(
+          buildCostRow(
+            copy.uncached,
+            usageCost.uncachedInputUsd,
+            tokenSub(`${formatExactTokens(uncachedTokens)} tok`),
+            usageCost.ratesPerMillion?.uncachedInput,
+          ),
+          buildCostRow(
+            copy.cacheRead,
+            usageCost.cachedInputUsd,
+            tokenSub(`${formatExactTokens(stats.cachedTokens)} tok`),
+            usageCost.ratesPerMillion?.cachedInput,
+          ),
+        );
+        if (stats.cacheWriteTokens > 0) {
+          body.append(
+            buildCostRow(
+              copy.cacheWrite,
+              usageCost.cacheWriteUsd,
+              tokenSub(`${formatExactTokens(stats.cacheWriteTokens)} tok`),
+              usageCost.ratesPerMillion?.cacheWrite,
+            ),
+          );
+        }
+        body.append(
+          buildCostRow(
+            copy.output,
+            usageCost.outputUsd,
+            tokenSub(`${formatExactTokens(stats.outputTokens)} tok`),
+            usageCost.ratesPerMillion?.output,
+          ),
+        );
+      } else {
         const tps = speed(stats),
           cache = cachePercent(stats),
           ttft = averageTtft(stats);
@@ -1247,20 +1520,18 @@ export function installFooter(options: Options): () => void {
           footer.activity.label.textContent = footer.error;
           footer.usage.button.style.display = "none";
         } else {
-          const tps = speed(stats),
-            cache = cachePercent(stats);
+          const tps = speed(stats);
           const activity =
             copy.counts(stats.turns, stats.steps) +
             (tps === null ? "" : ` · ${Math.round(tps)} tok/s`);
-          const usage =
-            `${formatTokens(totalTokens(stats))} tok` +
-            (cache === null ? "" : ` · ${copy.cache(cache)}`);
+          const sessionUsage = formatSessionUsage(copy, stats);
           if (footer.activity.label.textContent !== activity)
             footer.activity.label.textContent = activity;
-          if (footer.usage.label.textContent !== usage) footer.usage.label.textContent = usage;
+          if (footer.usage.label.textContent !== sessionUsage.label)
+            footer.usage.label.textContent = sessionUsage.label;
           if (popup?.anchor !== footer.activity.button) footer.activity.button.title = activity;
           if (popup?.anchor !== footer.usage.button)
-            footer.usage.button.title = `${usage}\n${totalTokens(stats).toLocaleString()} tok`;
+            footer.usage.button.title = sessionUsage.title;
           footer.usage.button.style.display = "inline-flex";
         }
       });

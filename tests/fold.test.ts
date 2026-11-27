@@ -196,11 +196,162 @@ test("A session upgraded from old to new Codex retains all earlier billed usage"
   const fold = new SessionFold("codex");
   fold.apply(event("task_started", 1, { turn_id: "old" }));
   fold.apply(event("token_count", 2, { info: { total_token_usage: usage(1000, 600, 100) } }));
+  assert.equal(fold.snapshot().cost, undefined);
+  fold.apply({ type: "turn_context", timestamp: at(3), payload: { turn_id: "old", model: "auto/gpt-6.2-sol" } });
   fold.apply(event("task_started", 10, { turn_id: "new" }));
+  fold.apply({ type: "turn_context", timestamp: at(11), payload: { turn_id: "new", model: "codex/gpt-6.2-sol" } });
   fold.apply(response("new-1", 12, "new"));
   assert.equal(fold.stats.steps, 2);
   assert.equal(fold.stats.turns, 2);
   assert.equal(totalTokens(fold.stats), 2200);
+  const { cost, turnUsages } = statsSchema.parse(fold.snapshot());
+  assert.deepEqual(turnUsages.map((turn) => turn.cost?.totalUsd), [0.00186, 0.00186]);
+  assert.deepEqual(cost, {
+    currency: "USD", complete: true, totalUsd: 0.00372,
+    uncachedInputUsd: 0.0016, cachedInputUsd: 0.00012, cacheWriteUsd: 0, outputUsd: 0.002,
+    ratesPerMillion: { uncachedInput: 2, cachedInput: 0.1, output: 10 },
+  });
+});
+
+test("Codex prices session metadata, per-request long context and in-turn model changes", () => {
+  const fold = new SessionFold("codex");
+  for (const row of [
+    { type: "session_meta", payload: { model: "openai/gpt-6.2-sol" } },
+    event("task_started", 1, { turn_id: "t1" }),
+    response("short", 2),
+    { ...response("long", 3), payload: { response_id: "long", turn_id: "t1", usage: usage(272_001, 72_001, 100) } },
+    { type: "turn_context", timestamp: at(4), payload: { turn_id: "t1", model: "openai/gpt-5.4-mini" } },
+    response("mini", 5),
+    response("mini", 5),
+    event("token_count", 5, { info: { total_token_usage: usage(100_000, 10, 100) } }),
+    event("task_started", 6, { turn_id: "t2" }),
+    { type: "turn_context", timestamp: at(7), payload: { turn_id: "t2", model: "deepseek-v4-pro-0813" } },
+    response("pro", 8, "t2"),
+  ]) fold.apply(row);
+
+  const stats = statsSchema.parse(fold.snapshot());
+  assert.deepEqual(stats.turnUsages[0].cost, {
+    currency: "USD", complete: true, totalUsd: 0.8185552,
+    uncachedInputUsd: 0.8011, cachedInputUsd: 0.0145052, cacheWriteUsd: 0, outputUsd: 0.00295,
+  });
+  assert.equal(stats.turnUsages[1].cost?.totalUsd, 0.0009504);
+  assert.equal(stats.cost?.totalUsd, 0.8195056);
+  assert.equal(stats.cost?.ratesPerMillion, undefined);
+  assert.equal(
+    Math.round(stats.cost!.totalUsd * 1e12),
+    stats.turnUsages.reduce((sum, turn) => sum + Math.round(turn.cost!.totalUsd * 1e12), 0),
+  );
+});
+
+test("A known model is never substituted for an explicitly unknown Codex or Claude model", () => {
+  const codex = new SessionFold("codex");
+  codex.apply({ type: "session_meta", payload: { model: "gpt-oss-120b-medium" } });
+  codex.apply(response("unknown", 2));
+  assert.equal(codex.snapshot("gpt-6.2-sol").turnUsages[0].cost, undefined);
+  assert.equal(codex.snapshot("gpt-6.2-sol").cost, undefined);
+
+  const claude = new SessionFold("claude");
+  const message = (id: string, model: string, seconds: number) => ({
+    type: "assistant", timestamp: at(seconds),
+    message: { id, model, usage: { input_tokens: 100, output_tokens: 10 } },
+  });
+  claude.apply(message("private", "private/model", 1));
+  assert.equal(claude.snapshot("claude-opus-5-5").cost, undefined);
+  claude.apply(message("opus", "claude-opus-5-5", 2));
+  const stats = claude.snapshot("claude-opus-5-5");
+  assert.deepEqual(stats.turnUsages[0].cost, {
+    currency: "USD", complete: false, totalUsd: 0.0006,
+    uncachedInputUsd: 0.0004, cachedInputUsd: 0, cacheWriteUsd: 0, outputUsd: 0.0002,
+  });
+  assert.deepEqual(stats.cost, stats.turnUsages[0].cost);
+});
+
+test("Codex prices a deferred mixed-route step from each read's fallback", () => {
+  const fold = new SessionFold("codex");
+  fold.apply(response("deferred", 1));
+  for (const [seconds, model] of [[2, "gpt-6.2-sol"], [4, "gpt-5.4-mini"]] as const) {
+    fold.apply({ type: "turn_context", timestamp: at(seconds), payload: { turn_id: "t1", model } });
+    fold.apply(response(model, seconds + 1));
+  }
+  assert.equal(fold.snapshot().cost?.complete, false);
+  assert.equal(fold.snapshot("gpt-6.2-sol").cost?.totalUsd, 0.004515);
+  assert.equal(fold.snapshot("gpt-5.4-mini").cost?.totalUsd, 0.00345);
+  assert.equal(fold.snapshot("gpt-5.4-mini").cost?.complete, true);
+  assert.equal(fold.snapshot().cost?.totalUsd, 0.002655);
+});
+
+test("Claude replaces streamed output and both cache TTLs without accumulating drift", () => {
+  const fold = new SessionFold("claude");
+  const assistant = (seconds: number, usage: object, model?: string, id = "msg") => ({
+    type: "assistant", timestamp: at(seconds), message: { id, model, usage },
+  });
+  const cache_creation = (short: number, long: number) => ({
+    ephemeral_5m_input_tokens: short, ephemeral_1h_input_tokens: long,
+  });
+  fold.apply(assistant(1, {
+    input_tokens: 1, cache_read_input_tokens: 3, cache_creation_input_tokens: 10,
+    cache_creation: cache_creation(4, 6), output_tokens: 1,
+  }, "claude-opus-5-5"));
+  assert.equal(fold.snapshot().turnUsages[0].cost?.totalUsd, 0.0000926);
+  assert.equal(fold.snapshot().turnUsages[0].cost?.ratesPerMillion?.cacheWrite, undefined);
+  assert.equal(fold.snapshot().cost?.ratesPerMillion, undefined);
+
+  for (let i = 0; i < 20; i++) {
+    fold.apply(assistant(i * 2 + 2, { output_tokens: 137 }));
+    fold.apply(assistant(i * 2 + 3, { output_tokens: 2 }));
+  }
+  assert.deepEqual(fold.snapshot().turnUsages[0].cost, {
+    currency: "USD", complete: true, totalUsd: 0.0001126,
+    uncachedInputUsd: 0.000004, cachedInputUsd: 0.0000006, cacheWriteUsd: 0.000068, outputUsd: 0.00004,
+    ratesPerMillion: { uncachedInput: 4, cachedInput: 0.2, output: 20 },
+  });
+
+  fold.apply(assistant(42, { cache_creation: cache_creation(10, 0) }));
+  fold.apply(assistant(43, { output_tokens: 1 }, "anthropic/claude-opus-5.5", "second"));
+  const stats = statsSchema.parse(fold.snapshot());
+  assert.deepEqual(stats.cost, {
+    currency: "USD", complete: true, totalUsd: 0.0001146,
+    uncachedInputUsd: 0.000004, cachedInputUsd: 0.0000006, cacheWriteUsd: 0.00005, outputUsd: 0.00006,
+    ratesPerMillion: { uncachedInput: 4, cachedInput: 0.2, cacheWrite: 5, output: 20 },
+  });
+  assert.deepEqual(stats.cost, stats.turnUsages[0].cost);
+  assert.equal(stats.steps, 2);
+  assert.equal(stats.inputTokens, 14);
+  assert.equal(stats.outputTokens, 3);
+});
+
+test("Claude cache writes reported through split fields alone can be replaced or removed", () => {
+  const fold = new SessionFold("claude");
+  const assistant = (seconds: number, writes: number, model?: string) => ({
+    type: "assistant", timestamp: at(seconds), message: {
+      id: "msg", model, usage: { cache_creation: { ephemeral_1h_input_tokens: writes } },
+    },
+  });
+  fold.apply(assistant(1, 10));
+  assert.equal(fold.snapshot("claude-opus-5-5").cost?.totalUsd, 0.00008);
+  fold.apply(assistant(2, 3, "claude-opus-5-5"));
+  assert.equal(fold.snapshot().cost?.totalUsd, 0.000024);
+  assert.equal(fold.snapshot().turnUsages[0].cost?.ratesPerMillion?.cacheWrite, 8);
+  fold.apply(assistant(3, 0));
+  assert.equal(fold.snapshot().cost, undefined);
+  assert.deepEqual(fold.snapshot().turnUsages, []);
+});
+
+test("Stream replacement removes the original rate when undated steps cross a price change", (t) => {
+  const effectiveAt = Date.UTC(2026, 11, 1);
+  let now = effectiveAt - 1;
+  t.mock.method(Date, "now", () => now);
+  const fold = new SessionFold("claude");
+  const assistant = (output: number) => ({
+    type: "assistant",
+    message: { id: "msg", model: "gemini-4-argon", usage: { input_tokens: 10, output_tokens: output } },
+  });
+  fold.apply(assistant(1));
+  assert.equal(fold.snapshot().cost?.totalUsd, 0.00003);
+  now = effectiveAt;
+  fold.apply(assistant(2));
+  assert.equal(fold.snapshot().cost?.totalUsd, 0.00008);
+  assert.deepEqual(fold.snapshot().cost?.ratesPerMillion, { uncachedInput: 4, cachedInput: 0.2, output: 20 });
 });
 
 test("Stored preferences and stats without turn usage receive defaults", () => {

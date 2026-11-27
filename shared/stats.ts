@@ -7,6 +7,25 @@ export const turnRouteSchema = z.object({
 });
 export type TurnRoute = z.infer<typeof turnRouteSchema>;
 
+export const costRatesSchema = z.object({
+  uncachedInput: z.number().nonnegative(),
+  cachedInput: z.number().nonnegative(),
+  cacheWrite: z.number().nonnegative().optional(),
+  output: z.number().nonnegative(),
+});
+
+export const costBreakdownSchema = z.object({
+  currency: z.literal("USD").default("USD"),
+  totalUsd: z.number().nonnegative(),
+  uncachedInputUsd: z.number().nonnegative(),
+  cachedInputUsd: z.number().nonnegative(),
+  cacheWriteUsd: z.number().nonnegative(),
+  outputUsd: z.number().nonnegative(),
+  complete: z.boolean(),
+  ratesPerMillion: costRatesSchema.optional(),
+});
+export type CostBreakdown = z.infer<typeof costBreakdownSchema>;
+
 export const turnUsageSchema = z.object({
   turnNumber: z.number().int().positive(),
   turnId: z.string().optional(),
@@ -22,6 +41,7 @@ export const turnUsageSchema = z.object({
   outputTokens: z.number().nonnegative(),
   reasoningTokens: z.number().nonnegative().optional(),
   totalTokens: z.number().nonnegative(),
+  cost: costBreakdownSchema.optional(),
 });
 export type TurnUsage = z.infer<typeof turnUsageSchema>;
 
@@ -40,6 +60,7 @@ export const statsSchema = z.object({
   ttftMs: z.number().nonnegative(),
   ttftSteps: z.number().int().nonnegative(),
   turnUsages: z.array(turnUsageSchema).default([]),
+  cost: costBreakdownSchema.optional(),
   speedKind: z.literal("estimated"),
 });
 

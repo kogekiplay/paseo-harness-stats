@@ -1,4 +1,8 @@
 import { emptyStats, type Stats, type TurnUsage } from "../shared/stats";
+import {
+  aggregateSessionCost, normalizeModelId, priceStep, sameBaseRates, toCostBreakdown,
+  type PicoUsdBreakdown,
+} from "../shared/pricing";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue =>
@@ -17,12 +21,43 @@ const modelName = (value: unknown) => (typeof value === "string" ? value.trim() 
 
 const optionalTokens = ["cachedTokens", "cacheWriteTokens", "reasoningTokens"] as const;
 type OptionalTokens = Partial<Pick<TurnUsage, (typeof optionalTokens)[number]>>;
-type StepTokens = Pick<TurnUsage, "uncachedInputTokens" | "outputTokens"> & OptionalTokens;
+type StepTokens = Pick<TurnUsage, "uncachedInputTokens" | "outputTokens"> & OptionalTokens & {
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  model?: string | null;
+  timestampMs?: number | null;
+};
+
+type PricedStep = NonNullable<ReturnType<typeof priceStep>>;
+type StepRates = Pick<PricedStep, "ratesPerMillion" | "hasCacheWrite" | "cacheWriteRate">;
+
+function addPicoUsd(target: PicoUsdBreakdown, source: PicoUsdBreakdown, multiplier: bigint) {
+  target.uncachedInput += source.uncachedInput * multiplier;
+  target.cachedInput += source.cachedInput * multiplier;
+  target.cacheWrite += source.cacheWrite * multiplier;
+  target.output += source.output * multiplier;
+}
+
+function summarizeRates(steps: StepRates[]) {
+  const base = steps[0].ratesPerMillion;
+  if (!steps.every(({ ratesPerMillion }) => sameBaseRates(base, ratesPerMillion))) return undefined;
+
+  const writeRates = new Set(steps.filter(({ hasCacheWrite }) => hasCacheWrite)
+    .map(({ cacheWriteRate }) => cacheWriteRate));
+  const cacheWrite = writeRates.size === 1 ? writeRates.values().next().value : undefined;
+  return { ...base, ...(cacheWrite !== undefined && { cacheWrite }) };
+}
 
 /** Queues metadata as it arrives and supports replacing a streamed usage snapshot. */
 export class TurnUsageAccumulator {
   private messageIds = new Set<string>();
   private models = new Set<string>();
+  private pricingModels = new Map<string, string>();
+  private deferredSteps = new Map<StepTokens, number>();
+  private stepPrices = new WeakMap<StepTokens, PricedStep>();
+  private pricedSteps = 0;
+  private picoUsd: PicoUsdBreakdown = { uncachedInput: 0n, cachedInput: 0n, cacheWrite: 0n, output: 0n };
+  private rateGroups = new Map<string, { count: number; rates: StepRates }>();
   private reports = { cachedTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
   private usage: Omit<TurnUsage, "turnNumber" | "routes" | "messageIds">;
 
@@ -65,7 +100,35 @@ export class TurnUsageAccumulator {
 
   addModel(value: unknown) {
     const model = modelName(value);
-    if (model) this.models.add(model);
+    if (model) {
+      this.models.add(model);
+      this.pricingModels.set(normalizeModelId(model), model);
+    }
+  }
+
+  private adjustPrice(step: StepTokens, direction: 1 | -1) {
+    const model = modelName(step.model);
+    if (!model) {
+      const count = (this.deferredSteps.get(step) ?? 0) + direction;
+      if (count > 0) this.deferredSteps.set(step, count);
+      else this.deferredSteps.delete(step);
+      return;
+    }
+    if (direction === 1) this.pricingModels.set(normalizeModelId(model), model);
+    // Keep the applied price for replacement even if an undated step crossed a price change.
+    const price = direction === 1 ? priceStep(step) : this.stepPrices.get(step);
+    if (!price) return;
+    if (direction === 1) this.stepPrices.set(step, price);
+    else this.stepPrices.delete(step);
+
+    this.pricedSteps += direction;
+    addPicoUsd(this.picoUsd, price.picoUsd, BigInt(direction));
+    const { ratesPerMillion: { uncachedInput, cachedInput, output }, hasCacheWrite, cacheWriteRate } = price;
+    const key = `${uncachedInput}/${cachedInput}/${output}/${hasCacheWrite ? cacheWriteRate : ""}`;
+    const group = this.rateGroups.get(key);
+    const count = (group?.count ?? 0) + direction;
+    if (count > 0) this.rateGroups.set(key, { count, rates: price });
+    else this.rateGroups.delete(key);
   }
 
   private adjustStep(step: StepTokens, direction: 1 | -1) {
@@ -84,6 +147,7 @@ export class TurnUsageAccumulator {
     }
     usage.inputTokens = usage.uncachedInputTokens + (usage.cachedTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
     usage.totalTokens = usage.inputTokens + usage.outputTokens;
+    this.adjustPrice(step, direction);
   }
 
   addStep(step: StepTokens, previous?: StepTokens) {
@@ -92,23 +156,30 @@ export class TurnUsageAccumulator {
   }
 
   snapshot(turnNumber: number, fallbackModel?: string | null): TurnUsage {
-    const models = this.models.size > 0 ? [...this.models] : [modelName(fallbackModel)].filter(Boolean);
+    const fallback = modelName(fallbackModel);
+    const models = this.models.size > 0 ? [...this.models] : [fallback].filter(Boolean);
+    const inferredModel = this.pricingModels.size === 1 ? this.pricingModels.values().next().value : fallback;
+    const picoUsd = { ...this.picoUsd };
+    const rates = [...this.rateGroups.values()].map((group) => group.rates);
+    let pricedSteps = this.pricedSteps;
+    if (inferredModel) {
+      for (const [step, count] of this.deferredSteps) {
+        const price = priceStep({ ...step, model: inferredModel });
+        if (!price) continue;
+        addPicoUsd(picoUsd, price.picoUsd, BigInt(count));
+        pricedSteps += count;
+        rates.push(price);
+      }
+    }
+    const complete = pricedSteps === this.usage.steps;
     return {
       ...this.usage,
       turnNumber,
       messageIds: [...this.messageIds],
       routes: models.map((model) => ({ provider: this.provider, model })),
+      ...(pricedSteps > 0 && { cost: toCostBreakdown(picoUsd, complete, complete ? summarizeRates(rates) : undefined) }),
     };
   }
-}
-
-export function withFallbackRoutes(stats: Stats, fallbackModel?: string | null): Stats {
-  const model = modelName(fallbackModel);
-  if (!model) return stats;
-  for (const turn of stats.turnUsages) {
-    if (turn.routes.length === 0) turn.routes.push({ provider: stats.provider, model });
-  }
-  return stats;
 }
 
 interface Usage {
@@ -148,6 +219,7 @@ export class SessionFold {
   readonly stats: ReturnType<typeof emptyStats>;
   private turn = "initial";
   private codexTurn: string | symbol = Symbol();
+  private currentCodexModel: string | null = null;
   private turns = new Set<string>();
   private usageTurns = new Map<string | symbol, TurnUsageAccumulator>();
   private responses = new Map<string, TurnUsageAccumulator>();
@@ -166,28 +238,37 @@ export class SessionFold {
   private pendingTools = new Map<string, number>();
   private claude = new Map<string, Usage>();
   private claudeMsgTurn = new Map<string, string>();
-  private claudeSteps = new Map<string, StepTokens>();
+  private claudeSteps = new Map<string, StepTokens & { reportedCacheWriteTokens?: number }>();
   private claudeTimings = new Map<string, { tokens: number; ms: number }>();
   private chain = new Map<string, { parent: string | null; at: number; attachment: boolean }>();
   private claudeStarts = new Map<string, { start: number; first: number | null }>();
   private claudeTtft = new Set<string>();
 
-  constructor(readonly provider: "codex" | "claude", fallbackModel?: string | null) {
+  constructor(readonly provider: "codex" | "claude", private fallbackModel?: string | null) {
     const fold = this;
     this.stats = {
       ...emptyStats(provider),
       get turnUsages() {
-        const usages: TurnUsage[] = [];
-        for (const turn of fold.usageTurns.values()) {
-          if (turn.billed) usages.push(turn.snapshot(usages.length + 1, fallbackModel));
-        }
-        return usages;
+        return fold.snapshotTurnUsages(fallbackModel);
       },
     };
   }
 
   snapshot(fallbackModel?: string | null): Stats {
-    return withFallbackRoutes({ ...this.stats }, fallbackModel);
+    const stats: Stats = { ...this.stats };
+    if (!modelName(this.fallbackModel) && modelName(fallbackModel)) {
+      stats.turnUsages = this.snapshotTurnUsages(fallbackModel);
+    }
+    const cost = aggregateSessionCost(stats.turnUsages);
+    return cost ? { ...stats, cost } : stats;
+  }
+
+  private snapshotTurnUsages(fallbackModel?: string | null) {
+    const usages: TurnUsage[] = [];
+    for (const turn of this.usageTurns.values()) {
+      if (turn.billed) usages.push(turn.snapshot(usages.length + 1, fallbackModel));
+    }
+    return usages;
   }
 
   private usageTurn(key: string | symbol) {
@@ -250,6 +331,10 @@ export class SessionFold {
   private codex(row: RecordValue) {
     const p = record(row.payload),
       at = time(row.timestamp);
+    if (row.type === "session_meta" || row.type === "turn_context") {
+      this.currentCodexModel = modelName(p.model) || this.currentCodexModel;
+    }
+    const timestampMs = Number.isFinite(at) ? at : null;
     if (row.type === "event_msg") {
       if (p.type === "task_started") {
         this.turn = typeof p.turn_id === "string" ? p.turn_id : String(row.timestamp);
@@ -308,11 +393,15 @@ export class SessionFold {
         optional[field] = value >= last ? value - last : value;
         this.legacyReported[field] = value;
       }
-      turn.addStep(codexStep(
-        !prev || reset ? u.input : u.input - prev.input,
-        !prev || reset ? u.output : u.output - prev.output,
-        optional,
-      ));
+      turn.addStep({
+        ...codexStep(
+          !prev || reset ? u.input : u.input - prev.input,
+          !prev || reset ? u.output : u.output - prev.output,
+          optional,
+        ),
+        model: this.currentCodexModel,
+        timestampMs,
+      });
       this.lastCumulative = u;
       this.legacyUsage = {
         input: u.input + this.legacyResets.input,
@@ -353,7 +442,7 @@ export class SessionFold {
       turn.complete(at);
       this.responses.set(id, turn);
       const { usage: u, optional } = codexUsage(p.usage);
-      turn.addStep(codexStep(u.input, u.output, optional));
+      turn.addStep({ ...codexStep(u.input, u.output, optional), model: this.currentCodexModel, timestampMs });
       for (const k of Object.keys(u) as (keyof Usage)[]) this.modernUsage[k] += u[k];
       this.stats.steps = this.legacySteps + this.responses.size;
       this.addTurn();
@@ -447,32 +536,46 @@ export class SessionFold {
         this.pendingTools.set(block.id, at);
     }
     const raw = record(msg.usage);
+    const creation = record(raw.cache_creation);
     const previousStep = this.claudeSteps.get(msg.id);
     const reported = {
       uncachedInputTokens: reportedCount(raw.input_tokens),
       cachedTokens: reportedCount(raw.cache_read_input_tokens),
       cacheWriteTokens: reportedCount(raw.cache_creation_input_tokens),
+      cacheWrite5mTokens: reportedCount(creation.ephemeral_5m_input_tokens),
+      cacheWrite1hTokens: reportedCount(creation.ephemeral_1h_input_tokens),
       outputTokens: reportedCount(raw.output_tokens),
       reasoningTokens: reportedCount(record(raw.output_tokens_details).thinking_tokens),
     };
     // Streamed blocks can omit fields already reported by an earlier block.
-    const step: StepTokens = {
+    const cacheWrite5mTokens = reported.cacheWrite5mTokens ?? previousStep?.cacheWrite5mTokens;
+    const cacheWrite1hTokens = reported.cacheWrite1hTokens ?? previousStep?.cacheWrite1hTokens;
+    const reportedCacheWriteTokens = reported.cacheWriteTokens ?? previousStep?.reportedCacheWriteTokens;
+    const classifiedWrites = cacheWrite5mTokens === undefined && cacheWrite1hTokens === undefined
+      ? undefined
+      : (cacheWrite5mTokens ?? 0) + (cacheWrite1hTokens ?? 0);
+    const step = {
       uncachedInputTokens: reported.uncachedInputTokens ?? previousStep?.uncachedInputTokens ?? 0,
       outputTokens: reported.outputTokens ?? previousStep?.outputTokens ?? 0,
       cachedTokens: reported.cachedTokens ?? previousStep?.cachedTokens,
-      cacheWriteTokens: reported.cacheWriteTokens ?? previousStep?.cacheWriteTokens,
+      cacheWriteTokens: reportedCacheWriteTokens ?? classifiedWrites,
+      reportedCacheWriteTokens,
+      cacheWrite5mTokens,
+      cacheWrite1hTokens,
       reasoningTokens: reported.reasoningTokens ?? previousStep?.reasoningTokens,
+      model: model && model !== "<synthetic>" ? model : previousStep?.model,
+      timestampMs: Number.isFinite(at) ? at : null,
     };
     this.claudeSteps.set(msg.id, step);
     turn.addStep(step, previousStep);
     const u: Usage = {
       input:
-        (reported.uncachedInputTokens ?? 0) +
-        (reported.cachedTokens ?? 0) +
-        (reported.cacheWriteTokens ?? 0),
-      cached: reported.cachedTokens ?? 0,
-      write: reported.cacheWriteTokens ?? 0,
-      output: reported.outputTokens ?? 0,
+        step.uncachedInputTokens +
+        (step.cachedTokens ?? 0) +
+        (step.cacheWriteTokens ?? 0),
+      cached: step.cachedTokens ?? 0,
+      write: step.cacheWriteTokens ?? 0,
+      output: step.outputTokens,
     };
     const prev = this.claude.get(msg.id);
     let timing = this.claudeStarts.get(msg.id);

@@ -74,6 +74,11 @@ test("Antigravity reads wrapped sessions, normalizes usage, and refreshes from t
         routes: [{ provider: "antigravity", model: "gemini-4-neon" }],
         steps: 1, inputTokens: 150, uncachedInputTokens: 100, cachedTokens: 40,
         cacheWriteTokens: 10, outputTokens: 20, reasoningTokens: 15, totalTokens: 170,
+        cost: {
+          currency: "USD", totalUsd: 0.000636, complete: true,
+          uncachedInputUsd: 0.0003, cachedInputUsd: 0.000006, cacheWriteUsd: 0.00003, outputUsd: 0.0003,
+          ratesPerMillion: { uncachedInput: 3, cachedInput: 0.15, cacheWrite: 3, output: 15 },
+        },
       },
       {
         turnId: "3", turnNumber: 2, messageIds: ["step-two", "two"], startedAtMs: 103000,
@@ -82,20 +87,33 @@ test("Antigravity reads wrapped sessions, normalizes usage, and refreshes from t
         cacheWriteTokens: 10, outputTokens: 20, reasoningTokens: 15, totalTokens: 170,
       },
     ]);
+    assert.equal(before.cost?.totalUsd, 0.000636);
+    assert.equal(before.cost?.complete, false);
 
     const sessionHandle = `plugin:${JSON.stringify({ version: 1, data: { sessionId: id } })}`;
     assert.deepEqual(await reader.read("antigravity", sessionHandle, "/demo"), before);
-    const withFallback = await reader.read("antigravity", id, "/demo", "fallback-one");
+    const withFallback = await reader.read("antigravity", id, "/demo", "gemini-4-argon-trial");
     assert.equal(withFallback.turnUsages[0].routes[0].model, "gemini-4-neon");
-    assert.equal(withFallback.turnUsages[1].routes[0].model, "fallback-one");
+    assert.equal(withFallback.turnUsages[1].routes[0].model, "gemini-4-argon-trial");
+    assert.equal(withFallback.turnUsages[1].cost?.totalUsd, 0.000424);
+    assert.equal(withFallback.cost?.totalUsd, 0.00106);
+    assert.equal(withFallback.cost?.complete, true);
+    assert.equal(withFallback.cost?.ratesPerMillion, undefined);
     withFallback.turnUsages[0].routes[0].model = "changed";
+    withFallback.turnUsages[0].cost!.ratesPerMillion!.uncachedInput = 99;
     withFallback.turnUsages[1].messageIds.push("changed");
-    const newFallback = await reader.read("antigravity", id, "/demo", "fallback-two");
+    const newFallback = await reader.read("antigravity", id, "/demo", "gemini-4-hydrogen");
     assert.equal(newFallback.turnUsages[0].routes[0].model, "gemini-4-neon");
-    assert.equal(newFallback.turnUsages[1].routes[0].model, "fallback-two");
+    assert.equal(newFallback.turnUsages[0].cost?.ratesPerMillion?.uncachedInput, 3);
+    assert.equal(newFallback.turnUsages[1].routes[0].model, "gemini-4-hydrogen");
+    assert.equal(newFallback.turnUsages[1].cost?.totalUsd, 0.000318);
+    assert.equal(newFallback.cost?.totalUsd, 0.000954);
     assert.deepEqual(newFallback.turnUsages[1].messageIds, ["step-two", "two"]);
+    assert.deepEqual(await reader.read("antigravity", id, "/demo"), before);
 
-    gen.run(3, generation(4, "two", "gemini-4-second"));
+    const priceChangeMs = Date.UTC(2026, 11, 1);
+    step.run(6, 15, message([1, sec(priceChangeMs / 1000 - 3)], [7, sec(priceChangeMs / 1000)]));
+    gen.run(3, generation(4, "two", "gemini-4-argon-trial"));
     gen.run(4, generation(6, "three"));
     const after = statsSchema.parse(await reader.read("antigravity", id, "/demo", "fallback-two"));
     assert.equal(after.steps, 3);
@@ -103,9 +121,18 @@ test("Antigravity reads wrapped sessions, normalizes usage, and refreshes from t
     assert.deepEqual(after.turnUsages[1], {
       ...before.turnUsages[1],
       messageIds: ["step-two", "two", "three"],
-      routes: [{ provider: "antigravity", model: "gemini-4-second" }],
+      completedAtMs: priceChangeMs,
+      routes: [{ provider: "antigravity", model: "gemini-4-argon-trial" }],
       steps: 2, inputTokens: 300, uncachedInputTokens: 200, cachedTokens: 80,
       cacheWriteTokens: 20, outputTokens: 40, reasoningTokens: 30, totalTokens: 340,
+      cost: {
+        currency: "USD", totalUsd: 0.001272, complete: true,
+        uncachedInputUsd: 0.0006, cachedInputUsd: 0.000012, cacheWriteUsd: 0.00006, outputUsd: 0.0006,
+      },
+    });
+    assert.deepEqual(after.cost, {
+      currency: "USD", totalUsd: 0.001908, complete: true,
+      uncachedInputUsd: 0.0009, cachedInputUsd: 0.000018, cacheWriteUsd: 0.00009, outputUsd: 0.0009,
     });
 
     // A generator entry without a prompt index still carries billed usage.

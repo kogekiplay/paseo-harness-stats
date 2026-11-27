@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { installFooter, type FooterCopy } from "../client/web";
-import { emptyStats, type TurnUsage } from "../shared/stats";
+import { emptyStats, type CostBreakdown, type TurnUsage } from "../shared/stats";
 import { getPreferences, setPreferences, subscribePreferences } from "../client/preferences";
 import type { PluginTheme } from "@getpaseo/plugin";
 
@@ -366,6 +366,8 @@ const fullCopy: FooterCopy = {
   turnCacheWrite: "缓存写入",
   turnOutput: "输出",
   turnReasoning: (tokens) => `（其中推理 ${tokens}）`,
+  costOfficialHint: "按官方 API 标准定价",
+  costPartialHint: "按官方 API 定价（不含未定价模型）",
 };
 
 function makeTurn(overrides: Partial<TurnUsage> & { turnNumber: number }): TurnUsage {
@@ -415,6 +417,7 @@ function renderTurnFooterHtml(options?: {
 async function turnFixture(options: {
   chatHtml: string;
   turnUsages: TurnUsage[];
+  cost?: CostBreakdown;
   showFooter?: boolean;
   showTurnUsage?: boolean;
   theme?: () => PluginTheme | null;
@@ -459,8 +462,10 @@ async function turnFixture(options: {
     steps: options.turnUsages.reduce((sum, t) => sum + t.steps, 0),
     inputTokens: options.turnUsages.reduce((sum, t) => sum + t.inputTokens, 0),
     cachedTokens: options.turnUsages.reduce((sum, t) => sum + (t.cachedTokens ?? 0), 0),
+    cacheWriteTokens: options.turnUsages.reduce((sum, t) => sum + (t.cacheWriteTokens ?? 0), 0),
     outputTokens: options.turnUsages.reduce((sum, t) => sum + t.outputTokens, 0),
     turnUsages: options.turnUsages,
+    ...(options.cost ? { cost: options.cost } : {}),
   };
   const dispose = installFooter({
     isWeb: true,
@@ -1474,6 +1479,203 @@ test("mountTurnButton coexists with Paseo 0.17.5 turn-metrics-trigger and mounts
     assert.equal(btn3.parentElement, actions3);
     assert.equal(copyRnw.querySelector("[data-harness-turn-usage-button]"), null);
     assert.ok(copyRnw.querySelector('[data-testid="copy-icon"]'));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Complete official API pricing renders in per-turn button/popup and session usage bar/popup without approximation symbols", async () => {
+  const turnCost: CostBreakdown = {
+    currency: "USD",
+    totalUsd: 0.16,
+    uncachedInputUsd: 0.03,
+    cachedInputUsd: 0.06,
+    cacheWriteUsd: 0.02,
+    outputUsd: 0.05,
+    complete: true,
+    ratesPerMillion: {
+      uncachedInput: 3,
+      cachedInput: 0.3,
+      cacheWrite: 3.75,
+      output: 15,
+    },
+  };
+  const sessionCost: CostBreakdown = {
+    currency: "USD",
+    totalUsd: 78.58,
+    uncachedInputUsd: 12.5,
+    cachedInputUsd: 4.08,
+    cacheWriteUsd: 1.5,
+    outputUsd: 60.5,
+    complete: true,
+    ratesPerMillion: {
+      uncachedInput: 3,
+      cachedInput: 0.3,
+      cacheWrite: 3.75,
+      output: 15,
+    },
+  };
+  const f = await turnFixture({
+    chatHtml: renderTurnFooterHtml({ rowId: "priced-1", messageId: "priced-1" }),
+    turnUsages: [
+      makeTurn({
+        turnNumber: 1,
+        messageIds: ["priced-1"],
+        routes: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+        inputTokens: 480_000,
+        uncachedInputTokens: 20_000,
+        cachedTokens: 450_000,
+        cacheWriteTokens: 10_000,
+        outputTokens: 9_500,
+        reasoningTokens: 2_100,
+        totalTokens: 489_500,
+        cost: turnCost,
+      }),
+    ],
+    cost: sessionCost,
+  });
+  try {
+    const turnBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-turn-usage-button="1"]')!;
+    assert.equal(turnBtn.textContent, "用量 489.5K tok · $0.16");
+    assert.equal(turnBtn.getAttribute("aria-label"), "用量 489.5K tok · $0.16");
+    assert.equal(turnBtn.title, "用量 489.5K tok · $0.16\n489,500 tok · $0.1600");
+
+    turnBtn.click();
+    const turnPopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="turn-usage"]')!;
+    assert.ok(turnPopup);
+    const turnText = turnPopup.textContent!;
+    assert.match(turnText, /本轮用量\$0\.1600/);
+    assert.match(turnText, /按官方 API 标准定价489,500 tok/);
+    assert.match(turnText, /提供方 \/ 模型anthropic\/claude-sonnet-4-5/);
+    assert.match(turnText, /缓存命中93\.8%/);
+    assert.match(turnText, /未缓存输入\$3 \/ 1M\$0\.030020,000 tok/);
+    assert.match(turnText, /缓存读取\$0\.3 \/ 1M\$0\.0600450,000 tok/);
+    assert.match(turnText, /缓存写入\$3\.75 \/ 1M\$0\.020010,000 tok/);
+    assert.match(turnText, /输出\$15 \/ 1M\$0\.05009,500 tok（其中推理 2,100 tok）/);
+    assert.doesNotMatch(turnText, /≈/);
+
+    const usageBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-stats-button="usage"]')!;
+    assert.equal(usageBtn.textContent, "489.5K tok · 缓存命中 94% · $78.58");
+    assert.equal(usageBtn.title, "489.5K tok · 缓存命中 94% · $78.58\n489,500 tok · $78.58");
+
+    usageBtn.click();
+    const usagePopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="usage"]')!;
+    assert.ok(usagePopup);
+    const usageText = usagePopup.textContent!;
+    assert.match(usageText, /Token 用量\$78\.58/);
+    assert.match(usageText, /按官方 API 标准定价489,500 tok/);
+    assert.match(usageText, /缓存命中94%/);
+    assert.match(usageText, /未缓存输入\$3 \/ 1M\$12\.5020,000 tok/);
+    assert.match(usageText, /缓存读取\$0\.3 \/ 1M\$4\.08450,000 tok/);
+    assert.match(usageText, /缓存写入\$3\.75 \/ 1M\$1\.5010,000 tok/);
+    assert.match(usageText, /输出\$15 \/ 1M\$60\.509,500 tok/);
+    assert.doesNotMatch(usageText, /≈/);
+
+    // Closing the session usage popup restores the exact tooltip including detail USD
+    usageBtn.click();
+    assert.equal(f.doc.querySelector('[role="dialog"]'), null);
+    assert.equal(usageBtn.title, "489.5K tok · 缓存命中 94% · $78.58\n489,500 tok · $78.58");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Partial official pricing without uniform rates shows partial hint and omits per-million rate labels", async () => {
+  const partialCost: CostBreakdown = {
+    currency: "USD",
+    totalUsd: 0.042,
+    uncachedInputUsd: 0.01,
+    cachedInputUsd: 0.002,
+    cacheWriteUsd: 0,
+    outputUsd: 0.03,
+    complete: false,
+  };
+  const f = await turnFixture({
+    chatHtml: renderTurnFooterHtml({ rowId: "partial-1", messageId: "partial-1" }),
+    turnUsages: [
+      makeTurn({
+        turnNumber: 1,
+        messageIds: ["partial-1"],
+        routes: [
+          { provider: "openai", model: "gpt-5.4" },
+          { provider: "custom", model: "local-unpriced" },
+        ],
+        inputTokens: 12_000,
+        uncachedInputTokens: 4_000,
+        cachedTokens: 8_000,
+        outputTokens: 2_000,
+        totalTokens: 14_000,
+        cost: partialCost,
+      }),
+    ],
+    cost: partialCost,
+  });
+  try {
+    const turnBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-turn-usage-button="1"]')!;
+    assert.equal(turnBtn.textContent, "用量 14K tok · $0.042");
+    assert.equal(turnBtn.title, "用量 14K tok · $0.042\n14,000 tok · $0.0420");
+
+    turnBtn.click();
+    const turnPopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="turn-usage"]')!;
+    const turnText = turnPopup.textContent!;
+    assert.match(turnText, /本轮用量\$0\.0420/);
+    assert.match(turnText, /按官方 API 定价（不含未定价模型）14,000 tok/);
+    assert.match(turnText, /未缓存输入\$0\.01004,000 tok/);
+    assert.match(turnText, /缓存读取\$0\.00208,000 tok/);
+    assert.match(turnText, /输出\$0\.03002,000 tok/);
+    assert.doesNotMatch(turnText, /\/ 1M/);
+    assert.doesNotMatch(turnText, /≈/);
+
+    const usageBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-stats-button="usage"]')!;
+    assert.equal(usageBtn.textContent, "14K tok · 缓存命中 67% · $0.042");
+    usageBtn.click();
+    const usagePopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="usage"]')!;
+    const usageText = usagePopup.textContent!;
+    assert.match(usageText, /Token 用量\$0\.0420/);
+    assert.match(usageText, /按官方 API 定价（不含未定价模型）14,000 tok/);
+    assert.doesNotMatch(usageText, /\/ 1M/);
+    assert.doesNotMatch(usageText, /≈/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Unpriced sessions and turns omit currency and pricing hints and remain pure token displays", async () => {
+  const f = await turnFixture({
+    chatHtml: renderTurnFooterHtml({ rowId: "unpriced-1", messageId: "unpriced-1" }),
+    turnUsages: [
+      makeTurn({
+        turnNumber: 1,
+        messageIds: ["unpriced-1"],
+        routes: [{ provider: "custom", model: "unknown-model" }],
+        inputTokens: 10_000,
+        uncachedInputTokens: 2_000,
+        cachedTokens: 8_000,
+        outputTokens: 500,
+        totalTokens: 10_500,
+      }),
+    ],
+  });
+  try {
+    const turnBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-turn-usage-button="1"]')!;
+    assert.equal(turnBtn.textContent, "用量 10.5K tok");
+    assert.equal(turnBtn.title, "用量 10.5K tok\n10,500 tok");
+    assert.doesNotMatch(turnBtn.textContent!, /\$/);
+
+    turnBtn.click();
+    const turnPopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="turn-usage"]')!;
+    assert.match(turnPopup.textContent!, /本轮用量10,500 tok/);
+    assert.doesNotMatch(turnPopup.textContent!, /\$|按官方 API|≈/);
+
+    const usageBtn = f.doc.querySelector<HTMLButtonElement>('[data-harness-stats-button="usage"]')!;
+    assert.equal(usageBtn.textContent, "10.5K tok · 缓存命中 80%");
+    assert.equal(usageBtn.title, "10.5K tok · 缓存命中 80%\n10,500 tok");
+    assert.doesNotMatch(usageBtn.textContent!, /\$/);
+
+    usageBtn.click();
+    const usagePopup = f.doc.querySelector<HTMLElement>('[data-harness-stats-popup="usage"]')!;
+    assert.match(usagePopup.textContent!, /Token 用量10,500 tok/);
+    assert.doesNotMatch(usagePopup.textContent!, /\$|按官方 API|≈/);
   } finally {
     f.cleanup();
   }
