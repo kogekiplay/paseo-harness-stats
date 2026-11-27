@@ -71,6 +71,7 @@ declare function getComputedStyle(element: Element): {
   color: string;
   backgroundColor: string;
   fontFamily: string;
+  display?: string;
 };
 declare function setInterval(callback: () => void, ms: number): number;
 declare function clearInterval(id: number): void;
@@ -161,10 +162,53 @@ type Popup =
       entry: TurnButtonEntry;
     };
 
-const visible = (element: Element) =>
-  element.isConnected &&
-  element.getClientRects().length > 0 &&
-  !element.closest('[hidden], [aria-hidden="true"], [inert]');
+function hasDisplayNone(element: Element, stopAt?: Element | null): boolean {
+  if (typeof getComputedStyle !== "function") return false;
+  let cur: Element | null = element;
+  while (cur) {
+    if (getComputedStyle(cur)?.display === "none") return true;
+    if (cur === stopAt || cur === document.body) break;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+function isElementVisible(element: Element, stopAt?: Element | null): boolean {
+  return (
+    element.isConnected &&
+    element.getClientRects().length > 0 &&
+    !element.closest('[hidden], [aria-hidden="true"], [inert]') &&
+    !hasDisplayNone(element, stopAt)
+  );
+}
+
+const visible = (element: Element) => isElementVisible(element);
+
+function findChatContainer(root: Element, pane: Element | null): Element | null {
+  const ancestors: Element[] = [];
+  let node: Element | null = root.parentElement;
+  while (node) {
+    ancestors.push(node);
+    if (node === pane || node === document.body) break;
+    node = node.parentElement;
+  }
+  if (pane && !ancestors.includes(pane)) {
+    ancestors.push(pane);
+  }
+  for (const ancestor of ancestors) {
+    const scroll = Array.from(
+      ancestor.querySelectorAll('[data-testid="agent-chat-scroll"]'),
+    ).find((el) => isElementVisible(el, pane));
+    if (scroll) return scroll;
+  }
+  for (const ancestor of ancestors) {
+    const turnFooter = Array.from(
+      ancestor.querySelectorAll('[data-testid="turn-footer"]'),
+    ).find((el) => isElementVisible(el, pane));
+    if (turnFooter) return ancestor;
+  }
+  return pane;
+}
 
 function element(tag: string, text?: string, styles?: Record<string, string>) {
   const node = document.createElement(tag);
@@ -242,12 +286,51 @@ function isWorkingFooter(footerEl: Element): boolean {
   );
 }
 
+interface RowRef {
+  rowId: string | null;
+  messageId: string | null;
+}
+
 interface FooterCandidate {
   el: Element;
   rowId: string | null;
   messageId: string | null;
+  fallbackRows: RowRef[];
   isAuxiliary: boolean;
   isVirtualized: boolean;
+}
+
+function isUserHistoryRow(row: Element): boolean {
+  const rowId = row.getAttribute("data-history-row-id");
+  if (rowId && rowId.startsWith("user_")) return true;
+  return (
+    row.getAttribute("data-testid") === "user-message" ||
+    row.querySelector('[data-testid="user-message"]') !== null
+  );
+}
+
+function candidateRowRefs(candidate: FooterCandidate): RowRef[] {
+  if (!candidate.isAuxiliary) {
+    return candidate.rowId || candidate.messageId
+      ? [{ rowId: candidate.rowId, messageId: candidate.messageId }]
+      : [];
+  }
+  return candidate.fallbackRows;
+}
+
+function collectRowIds(row: RowRef): string[] {
+  const ids: string[] = [];
+  if (row.rowId) {
+    ids.push(row.rowId);
+    const base = baseMessageId(row.rowId);
+    if (base !== row.rowId) ids.push(base);
+  }
+  if (row.messageId) {
+    ids.push(row.messageId);
+    const base = baseMessageId(row.messageId);
+    if (base !== row.messageId) ids.push(base);
+  }
+  return ids;
 }
 
 function matchTurnsToFooters(
@@ -257,21 +340,44 @@ function matchTurnsToFooters(
 ): { matched: Map<Element, TurnUsage>; working: Element[] } {
   const matched = new Map<Element, TurnUsage>();
   const working: Element[] = [];
-  const allFooters = Array.from(container.querySelectorAll('[data-testid="turn-footer"]'));
   const candidates: FooterCandidate[] = [];
-  for (const el of allFooters) {
-    if (isWorkingFooter(el)) {
-      working.push(el);
-      continue;
+  let recentRows: Element[] = [];
+  const nodes = Array.from(
+    container.querySelectorAll('[data-history-row-id], [data-testid="turn-footer"]'),
+  );
+  for (const el of nodes) {
+    if (hasDisplayNone(el, container)) continue;
+    if (el.getAttribute("data-testid") === "turn-footer") {
+      if (isWorkingFooter(el)) {
+        working.push(el);
+        recentRows = [];
+        continue;
+      }
+      const row = el.closest("[data-history-row-id]");
+      const isAuxiliary = !row;
+      const fallbackRows: RowRef[] = [];
+      if (isAuxiliary) {
+        for (let r = recentRows.length - 1; r >= 0; r--) {
+          const recent = recentRows[r];
+          if (isUserHistoryRow(recent)) continue;
+          fallbackRows.push({
+            rowId: recent.getAttribute("data-history-row-id"),
+            messageId: recent.getAttribute("data-message-id"),
+          });
+        }
+      }
+      candidates.push({
+        el,
+        rowId: row?.getAttribute("data-history-row-id") ?? null,
+        messageId: row?.getAttribute("data-message-id") ?? null,
+        fallbackRows,
+        isAuxiliary,
+        isVirtualized: Boolean(row?.hasAttribute("data-index")),
+      });
+      recentRows = [];
+    } else if (el.hasAttribute("data-history-row-id")) {
+      recentRows.push(el);
     }
-    const row = el.closest("[data-history-row-id]");
-    candidates.push({
-      el,
-      rowId: row?.getAttribute("data-history-row-id") ?? null,
-      messageId: row?.getAttribute("data-message-id") ?? null,
-      isAuxiliary: !row,
-      isVirtualized: Boolean(row?.hasAttribute("data-index")),
-    });
   }
   if (candidates.length === 0 || turns.length === 0) return { matched, working };
 
@@ -288,115 +394,93 @@ function matchTurnsToFooters(
     return ids;
   });
   for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    const candidateIds: string[] = [];
-    if (candidate.rowId) {
-      candidateIds.push(candidate.rowId);
-      const base = baseMessageId(candidate.rowId);
-      if (base !== candidate.rowId) candidateIds.push(base);
+    const rows = candidateRowRefs(candidates[i]);
+    for (const row of rows) {
+      const candidateIds = collectRowIds(row);
+      if (candidateIds.length === 0) continue;
+      let hit = false;
+      for (let tIdx = 0; tIdx < turns.length; tIdx++) {
+        if (usedTurns.has(tIdx)) continue;
+        const idSet = turnIdSets[tIdx];
+        if (candidateIds.some((id) => idSet.has(id))) {
+          assigned.set(i, tIdx);
+          usedTurns.add(tIdx);
+          hit = true;
+          break;
+        }
+      }
+      if (hit) break;
     }
-    if (candidate.messageId) {
-      candidateIds.push(candidate.messageId);
-      const base = baseMessageId(candidate.messageId);
-      if (base !== candidate.messageId) candidateIds.push(base);
+  }
+
+  // Pass 2: timestamp matching for assistant_<ts>_ / tool_<ts>_ row IDs (monotonic)
+  for (let i = 0; i < candidates.length; i++) {
+    if (assigned.has(i)) continue;
+    const rows = candidateRowRefs(candidates[i]);
+    if (rows.length === 0) continue;
+
+    let tBefore = -1;
+    for (let j = 0; j < i; j++) {
+      const matchedBefore = assigned.get(j);
+      if (matchedBefore !== undefined && matchedBefore > tBefore) tBefore = matchedBefore;
     }
-    if (candidateIds.length === 0) continue;
-    for (let tIdx = 0; tIdx < turns.length; tIdx++) {
-      if (usedTurns.has(tIdx)) continue;
-      const idSet = turnIdSets[tIdx];
-      if (candidateIds.some((id) => idSet.has(id))) {
-        assigned.set(i, tIdx);
-        usedTurns.add(tIdx);
+    let tAfter = turns.length;
+    for (let k = i + 1; k < candidates.length; k++) {
+      const matchedAfter = assigned.get(k);
+      if (matchedAfter !== undefined && matchedAfter < tAfter) tAfter = matchedAfter;
+    }
+    if (tBefore + 1 >= tAfter) continue;
+
+    for (const row of rows) {
+      const rowId = row.rowId;
+      if (!rowId) continue;
+      const m = /^(?:assistant|tool)_(\d+)_/.exec(rowId);
+      if (!m) continue;
+      const ts = Number(m[1]);
+      if (!Number.isFinite(ts)) continue;
+
+      let bestInWindow = -1;
+      let bestInWindowDist = Infinity;
+      let bestNear = -1;
+      let bestNearDist = Infinity;
+      for (let tIdx = tBefore + 1; tIdx < tAfter; tIdx++) {
+        if (usedTurns.has(tIdx)) continue;
+        const turn = turns[tIdx];
+        if (
+          turn.startedAtMs !== null &&
+          turn.completedAtMs !== null &&
+          ts >= turn.startedAtMs - 5_000 &&
+          ts <= turn.completedAtMs + 5_000
+        ) {
+          const dist = Math.abs(ts - turn.completedAtMs);
+          if (dist < bestInWindowDist) {
+            bestInWindowDist = dist;
+            bestInWindow = tIdx;
+          }
+        }
+        if (turn.completedAtMs !== null) {
+          const dist = Math.abs(ts - turn.completedAtMs);
+          if (dist <= 30_000 && dist < bestNearDist) {
+            bestNearDist = dist;
+            bestNear = tIdx;
+          }
+        }
+      }
+      const chosen = bestInWindow >= 0 ? bestInWindow : bestNear;
+      if (chosen >= 0) {
+        assigned.set(i, chosen);
+        usedTurns.add(chosen);
         break;
       }
     }
   }
 
-  // Pass 2: timestamp matching for assistant_<ts>_ / tool_<ts>_ row IDs
-  for (let i = 0; i < candidates.length; i++) {
-    if (assigned.has(i)) continue;
-    const rowId = candidates[i].rowId;
-    if (!rowId) continue;
-    const m = /^(?:assistant|tool)_(\d+)_/.exec(rowId);
-    if (!m) continue;
-    const ts = Number(m[1]);
-    if (!Number.isFinite(ts)) continue;
+  const hasVirtualization = Array.from(container.querySelectorAll("[data-index]")).some(
+    (el) => !hasDisplayNone(el, container),
+  );
 
-    let bestInWindow = -1;
-    let bestInWindowDist = Infinity;
-    let bestNear = -1;
-    let bestNearDist = Infinity;
-    for (let tIdx = 0; tIdx < turns.length; tIdx++) {
-      if (usedTurns.has(tIdx)) continue;
-      const turn = turns[tIdx];
-      if (
-        turn.startedAtMs !== null &&
-        turn.completedAtMs !== null &&
-        ts >= turn.startedAtMs - 5_000 &&
-        ts <= turn.completedAtMs + 5_000
-      ) {
-        const dist = Math.abs(ts - turn.completedAtMs);
-        if (dist < bestInWindowDist) {
-          bestInWindowDist = dist;
-          bestInWindow = tIdx;
-        }
-      }
-      if (turn.completedAtMs !== null) {
-        const dist = Math.abs(ts - turn.completedAtMs);
-        if (dist <= 30_000 && dist < bestNearDist) {
-          bestNearDist = dist;
-          bestNear = tIdx;
-        }
-      }
-    }
-    const chosen = bestInWindow >= 0 ? bestInWindow : bestNear;
-    if (chosen >= 0) {
-      assigned.set(i, chosen);
-      usedTurns.add(chosen);
-    }
-  }
-
-  const hasVirtualization = container.querySelector("[data-index]") !== null;
-
-  // Pass 3: non-virtualized exact 1:1 sequential alignment (allowing 1 extra active turn when working)
-  if (!hasVirtualization) {
-    const unmatchedCandidates: number[] = [];
-    for (let i = 0; i < candidates.length; i++) {
-      if (!assigned.has(i)) unmatchedCandidates.push(i);
-    }
-    const unmatchedTurns: number[] = [];
-    for (let tIdx = 0; tIdx < turns.length; tIdx++) {
-      if (!usedTurns.has(tIdx)) unmatchedTurns.push(tIdx);
-    }
-    if (
-      unmatchedCandidates.length > 0 &&
-      (unmatchedCandidates.length === unmatchedTurns.length ||
-        (working.length > 0 && unmatchedCandidates.length === unmatchedTurns.length - 1))
-    ) {
-      for (let k = 0; k < unmatchedCandidates.length; k++) {
-        assigned.set(unmatchedCandidates[k], unmatchedTurns[k]);
-        usedTurns.add(unmatchedTurns[k]);
-      }
-    }
-  } else if (working.length > 0) {
-    // Pass 4 (working): reuse previously confirmed turnNumber mappings and skip ungrounded tail alignment
-    if (previousMatched && previousMatched.size > 0) {
-      const turnIndexByNumber = new Map<number, number>();
-      for (let tIdx = 0; tIdx < turns.length; tIdx++) {
-        turnIndexByNumber.set(turns[tIdx].turnNumber, tIdx);
-      }
-      for (let i = 0; i < candidates.length; i++) {
-        if (assigned.has(i)) continue;
-        const prevTurn = previousMatched.get(candidates[i].el);
-        if (!prevTurn) continue;
-        const tIdx = turnIndexByNumber.get(prevTurn.turnNumber);
-        if (tIdx === undefined || usedTurns.has(tIdx)) continue;
-        assigned.set(i, tIdx);
-        usedTurns.add(tIdx);
-      }
-    }
-  } else {
-    // Pass 4 (idle): virtualized trailing contiguous non-virtualized alignment from the end
+  // Pass 3 / 4: unified trailing alignment (idle) and working-turn protection
+  if (working.length === 0) {
     let turnCursor = turns.length - 1;
     for (let i = candidates.length - 1; i >= 0; i--) {
       if (candidates[i].isVirtualized) break;
@@ -416,6 +500,72 @@ function matchTurnsToFooters(
       usedTurns.add(turnCursor);
       turnCursor--;
     }
+  } else {
+    if (previousMatched && previousMatched.size > 0) {
+      const turnIndexByNumber = new Map<number, number>();
+      for (let tIdx = 0; tIdx < turns.length; tIdx++) {
+        turnIndexByNumber.set(turns[tIdx].turnNumber, tIdx);
+      }
+      for (let i = 0; i < candidates.length; i++) {
+        if (assigned.has(i)) continue;
+        const prevTurn = previousMatched.get(candidates[i].el);
+        if (!prevTurn) continue;
+        const tIdx = turnIndexByNumber.get(prevTurn.turnNumber);
+        if (tIdx === undefined || usedTurns.has(tIdx)) continue;
+        let tBefore = -1;
+        for (let j = 0; j < i; j++) {
+          const matchedBefore = assigned.get(j);
+          if (matchedBefore !== undefined && matchedBefore > tBefore) tBefore = matchedBefore;
+        }
+        let tAfter = turns.length;
+        for (let k = i + 1; k < candidates.length; k++) {
+          const matchedAfter = assigned.get(k);
+          if (matchedAfter !== undefined && matchedAfter < tAfter) tAfter = matchedAfter;
+        }
+        if (tIdx <= tBefore || tIdx >= tAfter) continue;
+        assigned.set(i, tIdx);
+        usedTurns.add(tIdx);
+      }
+    }
+
+    if (!hasVirtualization) {
+      const unmatchedCandidates: number[] = [];
+      for (let i = 0; i < candidates.length; i++) {
+        if (!assigned.has(i)) unmatchedCandidates.push(i);
+      }
+      const unmatchedTurns: number[] = [];
+      for (let tIdx = 0; tIdx < turns.length; tIdx++) {
+        if (!usedTurns.has(tIdx)) unmatchedTurns.push(tIdx);
+      }
+      if (
+        unmatchedCandidates.length > 0 &&
+        unmatchedCandidates.every((idx) => !candidates[idx].isVirtualized) &&
+        (unmatchedCandidates.length === unmatchedTurns.length ||
+          unmatchedCandidates.length === unmatchedTurns.length - 1)
+      ) {
+        const provisional = new Map(assigned);
+        for (let k = 0; k < unmatchedCandidates.length; k++) {
+          provisional.set(unmatchedCandidates[k], unmatchedTurns[k]);
+        }
+        let monotonic = true;
+        let prevTurnIdx = -1;
+        for (let i = 0; i < candidates.length; i++) {
+          const tIdx = provisional.get(i);
+          if (tIdx === undefined) continue;
+          if (tIdx <= prevTurnIdx) {
+            monotonic = false;
+            break;
+          }
+          prevTurnIdx = tIdx;
+        }
+        if (monotonic) {
+          for (let k = 0; k < unmatchedCandidates.length; k++) {
+            assigned.set(unmatchedCandidates[k], unmatchedTurns[k]);
+            usedTurns.add(unmatchedTurns[k]);
+          }
+        }
+      }
+    }
   }
 
   for (const [candidateIndex, turnIndex] of assigned) {
@@ -434,9 +584,13 @@ function mountTurnButton(footerEl: Element, button: Element) {
     }
     return;
   }
-  const fork = footerEl.querySelector('[data-testid="assistant-fork-menu"]');
-  const existingButton = footerEl.querySelector("button:not([data-harness-turn-usage-button])");
-  const actionHost = fork?.parentElement ?? existingButton?.parentElement ?? null;
+  const anchor =
+    footerEl.querySelector('[data-testid="assistant-fork-menu"]') ??
+    footerEl.querySelector('[data-testid="turn-metrics-trigger"]') ??
+    footerEl.querySelector(
+      'button:not([data-harness-turn-usage-button]), [role="button"]:not([data-harness-turn-usage-button])',
+    );
+  const actionHost = anchor?.parentElement ?? null;
   if (actionHost && footerEl.contains(actionHost)) {
     if (button.parentElement !== actionHost) actionHost.append(button);
     return;
@@ -927,8 +1081,7 @@ export function installFooter(options: Options): () => void {
   function syncTurnUsage(footer: Footer) {
     if (!showTurnUsage) return;
     withMutationGuard(() => {
-      const container =
-        footer.pane?.querySelector('[data-testid="agent-chat-scroll"]') ?? footer.pane;
+      const container = findChatContainer(footer.root, footer.pane);
       const stats = footer.stats;
       const turns =
         stats && stats.source === "session"

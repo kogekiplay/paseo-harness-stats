@@ -1049,3 +1049,432 @@ test("Preferences store defaults turnUsageEnabled to true and notifies subscribe
     setPreferences(initial);
   }
 });
+
+test("RetainedPanel tabs isolate turn usage buttons to the active visible tab's agent-chat-scroll", async () => {
+  const dom = new JSDOM(
+    `<body>
+      <div data-testid="workspace-pane-main">
+        <button data-testid="workspace-tab-agent_agent-1" aria-selected="false">Tab 1</button>
+        <button data-testid="workspace-tab-agent_agent-2" aria-selected="true">Tab 2</button>
+        <div data-role="retained-panel-1" style="display: none">
+          <div data-testid="agent-chat-scroll">
+            ${renderTurnFooterHtml({ rowId: "tab1-row-1", messageId: "tab1-msg-1" })}
+            ${renderTurnFooterHtml({ rowId: "tab1-row-2", messageId: "tab1-msg-2" })}
+          </div>
+          <div><div data-testid="message-input-root"><textarea></textarea></div></div>
+        </div>
+        <div data-role="retained-panel-2">
+          <div data-testid="agent-chat-scroll">
+            ${renderTurnFooterHtml({ rowId: "tab2-row-1", messageId: "tab2-msg-1" })}
+            ${renderTurnFooterHtml({ rowId: "tab2-row-2", messageId: "tab2-msg-2" })}
+          </div>
+          <div><div data-testid="message-input-root"><textarea></textarea></div></div>
+        </div>
+      </div>
+    </body>`,
+    { pretendToBeVisual: true },
+  );
+  const win = dom.window,
+    doc = win.document;
+  const originalGlobals = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({
+    window: win,
+    document: doc,
+    MutationObserver: win.MutationObserver,
+    getComputedStyle: win.getComputedStyle.bind(win),
+  })) {
+    originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  Object.defineProperty(doc.documentElement, "clientWidth", { value: 1200 });
+  Object.defineProperty(doc.documentElement, "clientHeight", { value: 800 });
+  Object.defineProperty(win.HTMLElement.prototype, "getClientRects", {
+    value() {
+      return [this.getBoundingClientRect()];
+    },
+  });
+  Object.defineProperty(win.HTMLElement.prototype, "getBoundingClientRect", {
+    value() {
+      return { left: 200, right: 360, top: 600, bottom: 624, width: 160, height: 24 };
+    },
+  });
+
+  const dispose = installFooter({
+    isWeb: true,
+    hasAgent: (id) => id === "agent-1" || id === "agent-2",
+    read: async (id) => ({
+      ...emptyStats("codex"),
+      turns: 2,
+      steps: 2,
+      turnUsages:
+        id === "agent-2"
+          ? [
+              makeTurn({ turnNumber: 1, messageIds: ["tab2-msg-1"], totalTokens: 3100 }),
+              makeTurn({ turnNumber: 2, messageIds: ["tab2-msg-2"], totalTokens: 4200 }),
+            ]
+          : [
+              makeTurn({ turnNumber: 1, messageIds: ["tab1-msg-1"], totalTokens: 1100 }),
+              makeTurn({ turnNumber: 2, messageIds: ["tab1-msg-2"], totalTokens: 2200 }),
+            ],
+    }),
+    copy: () => fullCopy,
+  });
+
+  try {
+    await flush();
+    // Hidden Tab 1 must never receive any turn usage buttons or footer
+    assert.equal(
+      doc.querySelectorAll('[data-role="retained-panel-1"] [data-harness-turn-usage-button]')
+        .length,
+      0,
+    );
+    assert.equal(doc.querySelector('[data-role="retained-panel-1"] [data-harness-stats]'), null);
+
+    // Visible Tab 2 receives exact per-turn buttons inside its own agent-chat-scroll
+    const tab2Buttons = doc.querySelectorAll<HTMLButtonElement>(
+      '[data-role="retained-panel-2"] [data-harness-turn-usage-button]',
+    );
+    assert.equal(tab2Buttons.length, 2);
+    assert.equal(tab2Buttons[0].getAttribute("data-harness-turn-usage-button"), "1");
+    assert.equal(tab2Buttons[0].textContent, "用量 3.1K tok");
+    assert.equal(tab2Buttons[1].getAttribute("data-harness-turn-usage-button"), "2");
+    assert.equal(tab2Buttons[1].textContent, "用量 4.2K tok");
+  } finally {
+    dispose();
+    win.close();
+    for (const [key, descriptor] of originalGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});
+
+test("Paginated non-virtualized history aligns trailing footers (including auxiliaryTurnFooter) and preserves them when a new turn starts working", async () => {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  let pollCallback: () => void = () => {};
+  globalThis.setInterval = ((fn: () => void) => {
+    pollCallback = fn;
+    return 1 as unknown as ReturnType<typeof setInterval>;
+  }) as typeof setInterval;
+  globalThis.clearInterval = (() => {
+    pollCallback = () => {};
+  }) as typeof clearInterval;
+
+  const dom = new JSDOM(
+    `<body>
+      <div data-testid="workspace-pane-main">
+        <button data-testid="workspace-tab-agent_agent-1" aria-selected="true">Agent</button>
+        <div data-testid="agent-chat-scroll">
+          ${renderTurnFooterHtml({ rowId: "paginated-row-18" })}
+          ${renderTurnFooterHtml({ rowId: "paginated-row-19" })}
+          <div data-history-row-id="user_9000_u20"><div data-testid="user-message">Prompt 20</div></div>
+          <div data-history-row-id="assistant_9001_a20">Reply 20</div>
+          ${renderTurnFooterHtml({ timing: "Worked for 8s" })}
+        </div>
+        <div><div data-testid="message-input-root"><textarea></textarea></div></div>
+      </div>
+    </body>`,
+    { pretendToBeVisual: true },
+  );
+  const win = dom.window,
+    doc = win.document;
+  const originalGlobals = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({
+    window: win,
+    document: doc,
+    MutationObserver: win.MutationObserver,
+    getComputedStyle: win.getComputedStyle.bind(win),
+  })) {
+    originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  Object.defineProperty(doc.documentElement, "clientWidth", { value: 1200 });
+  Object.defineProperty(doc.documentElement, "clientHeight", { value: 800 });
+  Object.defineProperty(win.HTMLElement.prototype, "getClientRects", {
+    value() {
+      return [this.getBoundingClientRect()];
+    },
+  });
+  Object.defineProperty(win.HTMLElement.prototype, "getBoundingClientRect", {
+    value() {
+      return { left: 200, right: 360, top: 600, bottom: 624, width: 160, height: 24 };
+    },
+  });
+
+  const currentTurns: TurnUsage[] = Array.from({ length: 20 }, (_, idx) =>
+    makeTurn({
+      turnNumber: idx + 1,
+      messageIds: [],
+      totalTokens: (idx + 1) * 1000,
+    }),
+  );
+
+  const dispose = installFooter({
+    isWeb: true,
+    hasAgent: (id) => id === "agent-1",
+    read: async () => ({
+      ...emptyStats("antigravity"),
+      turns: currentTurns.length,
+      steps: currentTurns.length,
+      turnUsages: [...currentTurns],
+    }),
+    copy: () => fullCopy,
+  });
+
+  try {
+    await flush();
+    // 20 turns in log, only trailing 3 non-virtualized footers mounted -> align to turns 18, 19, 20
+    const btn18 = doc.querySelector(
+      '[data-history-row-id="paginated-row-18"] [data-harness-turn-usage-button]',
+    )!;
+    const btn19 = doc.querySelector(
+      '[data-history-row-id="paginated-row-19"] [data-harness-turn-usage-button]',
+    )!;
+    const btn20 = doc.querySelector('[data-role="auxiliary"] [data-harness-turn-usage-button]')!;
+    assert.equal(btn18.getAttribute("data-harness-turn-usage-button"), "18");
+    assert.equal(btn18.textContent, "用量 18K tok");
+    assert.equal(btn19.getAttribute("data-harness-turn-usage-button"), "19");
+    assert.equal(btn19.textContent, "用量 19K tok");
+    assert.equal(btn20.getAttribute("data-harness-turn-usage-button"), "20");
+    assert.equal(btn20.textContent, "用量 20K tok");
+
+    // Turn 21 begins working and logs partial usage, while an unconfirmed trailing footer also appears
+    const scroll = doc.querySelector('[data-testid="agent-chat-scroll"]')!;
+    const unconfirmedWrap = doc.createElement("div");
+    unconfirmedWrap.setAttribute("data-role", "unconfirmed-21");
+    unconfirmedWrap.innerHTML = renderTurnFooterHtml({ timing: "Worked for 1s" });
+    const workingWrap = doc.createElement("div");
+    workingWrap.setAttribute("data-role", "working-21");
+    workingWrap.innerHTML = renderTurnFooterHtml({ working: "indicator" });
+    scroll.append(unconfirmedWrap, workingWrap);
+
+    currentTurns.push(
+      makeTurn({
+        turnNumber: 21,
+        messageIds: [],
+        totalTokens: 99_900,
+      }),
+    );
+    pollCallback();
+    await flush();
+
+    // Turns 18-20 stay intact and unpolluted; unconfirmed & working turn 21 have no button
+    assert.equal(
+      doc
+        .querySelector('[data-history-row-id="paginated-row-18"] [data-harness-turn-usage-button]')
+        ?.getAttribute("data-harness-turn-usage-button"),
+      "18",
+    );
+    assert.equal(
+      doc.querySelector('[data-history-row-id="paginated-row-18"] [data-harness-turn-usage-button]')
+        ?.textContent,
+      "用量 18K tok",
+    );
+    assert.equal(
+      doc
+        .querySelector('[data-history-row-id="paginated-row-19"] [data-harness-turn-usage-button]')
+        ?.getAttribute("data-harness-turn-usage-button"),
+      "19",
+    );
+    assert.equal(
+      doc.querySelector('[data-history-row-id="paginated-row-19"] [data-harness-turn-usage-button]')
+        ?.textContent,
+      "用量 19K tok",
+    );
+    assert.equal(
+      doc
+        .querySelector('[data-role="auxiliary"] [data-harness-turn-usage-button]')
+        ?.getAttribute("data-harness-turn-usage-button"),
+      "20",
+    );
+    assert.equal(
+      doc.querySelector('[data-role="auxiliary"] [data-harness-turn-usage-button]')?.textContent,
+      "用量 20K tok",
+    );
+    assert.equal(
+      doc.querySelector('[data-role="unconfirmed-21"] [data-harness-turn-usage-button]'),
+      null,
+    );
+    assert.equal(
+      doc.querySelector('[data-role="working-21"] [data-harness-turn-usage-button]'),
+      null,
+    );
+  } finally {
+    dispose();
+    win.close();
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+    for (const [key, descriptor] of originalGlobals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});
+
+test("auxiliaryTurnFooter resolves preceding data-history-row-id rows for Pass 1 exact ID and Pass 2 timestamp matching across unbilled gaps", async () => {
+  const baseTs = 1710000000000;
+  // Pass 1: auxiliary footer follows assistant row with exact message ID (:segment: stripped), skipping user rows and an unbilled middle turn
+  const f1 = await turnFixture({
+    chatHtml:
+      renderTurnFooterHtml({ rowId: "msg-1", messageId: "msg-1" }) +
+      `<div data-history-row-id="user_${baseTs + 10_000}_u2"><div data-testid="user-message">User turn 2</div></div>` +
+      `<div data-history-row-id="msg-3:segment:0" data-message-id="msg-3:segment:0">Assistant reply 3</div>` +
+      `<div data-history-row-id="user_${baseTs + 15_000}_queued"><div data-testid="user-message">Queued user</div></div>` +
+      `<div data-role="aux-pass1">${renderTurnFooterHtml({ timing: "Worked for 4s" })}</div>` +
+      renderTurnFooterHtml({ rowId: "msg-5", messageId: "msg-5" }),
+    turnUsages: [
+      makeTurn({ turnNumber: 1, messageIds: ["msg-1"], totalTokens: 1100 }),
+      makeTurn({ turnNumber: 2, messageIds: ["msg-2"], totalTokens: 2200 }),
+      makeTurn({ turnNumber: 3, messageIds: ["msg-3"], totalTokens: 3300 }),
+      makeTurn({ turnNumber: 4, messageIds: ["msg-4"], totalTokens: 4400 }),
+      makeTurn({ turnNumber: 5, messageIds: ["msg-5"], totalTokens: 5500 }),
+    ],
+  });
+  try {
+    const auxBtn = f1.doc.querySelector('[data-role="aux-pass1"] [data-harness-turn-usage-button]')!;
+    assert.equal(auxBtn.getAttribute("data-harness-turn-usage-button"), "3");
+    assert.equal(auxBtn.textContent, "用量 3.3K tok");
+  } finally {
+    f1.cleanup();
+  }
+
+  // Pass 2: auxiliary footer follows assistant_<ts>_hash row outside [data-history-row-id], with a missing/unrendered turn between anchors
+  const f2 = await turnFixture({
+    chatHtml:
+      renderTurnFooterHtml({ rowId: "msg-1", messageId: "msg-1" }) +
+      `<div data-history-row-id="user_${baseTs + 30_000}_u3"><div data-testid="user-message">User turn 3</div></div>` +
+      `<div data-history-row-id="assistant_${baseTs + 40_000}_hash3">Assistant reply 3</div>` +
+      `<div data-role="aux-pass2">${renderTurnFooterHtml({ timing: "Worked for 7s" })}</div>` +
+      renderTurnFooterHtml({ rowId: "msg-5", messageId: "msg-5" }),
+    turnUsages: [
+      makeTurn({
+        turnNumber: 1,
+        messageIds: ["msg-1"],
+        startedAtMs: baseTs,
+        completedAtMs: baseTs + 5_000,
+        totalTokens: 1100,
+      }),
+      makeTurn({
+        turnNumber: 2,
+        messageIds: [],
+        startedAtMs: baseTs + 10_000,
+        completedAtMs: baseTs + 15_000,
+        totalTokens: 2200,
+      }),
+      makeTurn({
+        turnNumber: 3,
+        messageIds: [],
+        startedAtMs: baseTs + 35_000,
+        completedAtMs: baseTs + 42_000,
+        totalTokens: 3600,
+      }),
+      makeTurn({
+        turnNumber: 4,
+        messageIds: [],
+        startedAtMs: baseTs + 80_000,
+        completedAtMs: baseTs + 90_000,
+        totalTokens: 4400,
+      }),
+      makeTurn({
+        turnNumber: 5,
+        messageIds: ["msg-5"],
+        startedAtMs: baseTs + 120_000,
+        completedAtMs: baseTs + 130_000,
+        totalTokens: 5500,
+      }),
+    ],
+  });
+  try {
+    const auxBtn = f2.doc.querySelector('[data-role="aux-pass2"] [data-harness-turn-usage-button]')!;
+    assert.equal(auxBtn.getAttribute("data-harness-turn-usage-button"), "3");
+    assert.equal(auxBtn.textContent, "用量 3.6K tok");
+    const btn5 = f2.doc.querySelector(
+      '[data-history-row-id="msg-5"] [data-harness-turn-usage-button]',
+    )!;
+    assert.equal(btn5.getAttribute("data-harness-turn-usage-button"), "5");
+    assert.equal(btn5.textContent, "用量 5.5K tok");
+  } finally {
+    f2.cleanup();
+  }
+});
+
+test("mountTurnButton coexists with Paseo 0.17.5 turn-metrics-trigger and mounts into RNW role=button action bar when timing label is absent", async () => {
+  const f = await turnFixture({
+    chatHtml:
+      // Case 1: timing label present + Paseo 0.17.5 turn-metrics-trigger inside actions
+      `<div data-history-row-id="rnw-1" data-message-id="rnw-1">
+        <div data-testid="turn-footer">
+          <div>
+            <div data-role="container">
+              <div data-role="actions">
+                <div role="button" data-testid="copy-btn"><span>Copy</span></div>
+                <div data-testid="assistant-fork-menu"><div role="button"><span>Fork</span></div></div>
+                <div role="button" data-testid="turn-metrics-trigger"><span>Metrics</span></div>
+              </div>
+              <div role="button" data-role="timing-btn"><span data-testid="turn-footer-timing-label">工作了 9s</span></div>
+            </div>
+          </div>
+        </div>
+      </div>` +
+      // Case 2: no timing label, no fork menu, only Paseo turn-metrics-trigger
+      `<div data-history-row-id="rnw-2" data-message-id="rnw-2">
+        <div data-testid="turn-footer">
+          <div>
+            <div data-role="actions-metrics">
+              <div role="button" data-testid="turn-metrics-trigger"><svg></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>` +
+      // Case 3: no timing label, no fork menu, no metrics trigger — only RNW <div role="button"> with inner icon
+      `<div data-history-row-id="rnw-3" data-message-id="rnw-3">
+        <div data-testid="turn-footer">
+          <div>
+            <div data-role="actions-rnw">
+              <div role="button" data-testid="copy-rnw"><svg data-testid="copy-icon"></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>`,
+    turnUsages: [
+      makeTurn({ turnNumber: 1, messageIds: ["rnw-1"], totalTokens: 1200 }),
+      makeTurn({ turnNumber: 2, messageIds: ["rnw-2"], totalTokens: 2300 }),
+      makeTurn({ turnNumber: 3, messageIds: ["rnw-3"], totalTokens: 3400 }),
+    ],
+  });
+  try {
+    // Case 1: placed between actions (Copy/Fork/turn-metrics-trigger) and timing button
+    const btn1 = f.doc.querySelector('[data-history-row-id="rnw-1"] [data-harness-turn-usage-button]')!;
+    const container1 = f.doc.querySelector('[data-history-row-id="rnw-1"] [data-role="container"]')!;
+    const children1 = Array.from(container1.children);
+    assert.equal(children1[0].getAttribute("data-role"), "actions");
+    assert.equal(children1[1], btn1);
+    assert.equal(children1[2].getAttribute("data-role"), "timing-btn");
+
+    // Case 2: appended as sibling in turn-metrics-trigger's action bar, not inside trigger
+    const btn2 = f.doc.querySelector('[data-history-row-id="rnw-2"] [data-harness-turn-usage-button]')!;
+    const actions2 = f.doc.querySelector(
+      '[data-history-row-id="rnw-2"] [data-role="actions-metrics"]',
+    )!;
+    assert.equal(btn2.parentElement, actions2);
+    assert.equal(
+      f.doc.querySelector(
+        '[data-history-row-id="rnw-2"] [data-testid="turn-metrics-trigger"] [data-harness-turn-usage-button]',
+      ),
+      null,
+    );
+
+    // Case 3: appended as sibling in RNW <div role="button">'s action bar, preserving inner icon node
+    const btn3 = f.doc.querySelector('[data-history-row-id="rnw-3"] [data-harness-turn-usage-button]')!;
+    const actions3 = f.doc.querySelector(
+      '[data-history-row-id="rnw-3"] [data-role="actions-rnw"]',
+    )!;
+    const copyRnw = f.doc.querySelector('[data-history-row-id="rnw-3"] [data-testid="copy-rnw"]')!;
+    assert.equal(btn3.parentElement, actions3);
+    assert.equal(copyRnw.querySelector("[data-harness-turn-usage-button]"), null);
+    assert.ok(copyRnw.querySelector('[data-testid="copy-icon"]'));
+  } finally {
+    f.cleanup();
+  }
+});
